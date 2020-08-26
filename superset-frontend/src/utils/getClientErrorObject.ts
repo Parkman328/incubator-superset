@@ -18,19 +18,25 @@
  */
 import { SupersetClientResponse } from '@superset-ui/connection';
 import { t } from '@superset-ui/translation';
+import {
+  SupersetError,
+  ErrorTypeEnum,
+} from 'src/components/ErrorMessage/types';
 import COMMON_ERR_MESSAGES from './errorMessages';
 
 // The response always contains an error attribute, can contain anything from the
 // SupersetClientResponse object, and can contain a spread JSON blob
 export type ClientErrorObject = {
   error: string;
-  severity?: string;
+  errors?: SupersetError[];
+  link?: string;
   message?: string;
+  severity?: string;
   stacktrace?: string;
 } & Partial<SupersetClientResponse>;
 
 export default function getClientErrorObject(
-  response: SupersetClientResponse | string,
+  response: SupersetClientResponse | (Response & { timeout: number }) | string,
 ): Promise<ClientErrorObject> {
   // takes a SupersetClientResponse as input, attempts to read response as Json if possible,
   // and returns a Promise that resolves to a plain object with error key and text value.
@@ -48,6 +54,13 @@ export default function getClientErrorObject(
           .json()
           .then(errorJson => {
             let error = { ...responseObject, ...errorJson };
+
+            // Backwards compatibility for old error renderers with the new error object
+            if (error.errors && error.errors.length > 0) {
+              error.error = error.description = error.errors[0].message;
+              error.link = error.errors[0]?.extra?.link;
+            }
+
             if (error.stack) {
               error = {
                 ...error,
@@ -74,6 +87,39 @@ export default function getClientErrorObject(
               resolve({ ...responseObject, error: errorText });
             });
           });
+      } else if (
+        'statusText' in response &&
+        response.statusText === 'timeout' &&
+        'timeout' in response
+      ) {
+        resolve({
+          ...responseObject,
+          error: 'Request timed out',
+          errors: [
+            {
+              error_type: ErrorTypeEnum.FRONTEND_TIMEOUT_ERROR,
+              extra: {
+                timeout: response.timeout / 1000,
+                issue_codes: [
+                  {
+                    code: 1000,
+                    message: t(
+                      'Issue 1000 - The datasource is too large to query.',
+                    ),
+                  },
+                  {
+                    code: 1001,
+                    message: t(
+                      'Issue 1001 - The database is under an unusual load.',
+                    ),
+                  },
+                ],
+              },
+              level: 'error',
+              message: 'Request timed out',
+            },
+          ],
+        });
       } else {
         // fall back to Response.statusText or generic error of we cannot read the response
         const error =

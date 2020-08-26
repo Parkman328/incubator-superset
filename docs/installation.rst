@@ -24,7 +24,8 @@ Getting Started
 Superset has deprecated support for Python ``2.*`` and supports
 only ``~=3.6`` to take advantage of the newer Python features and reduce
 the burden of supporting previous versions. We run our test suite
-against ``3.6``, but ``3.7`` is fully supported as well.
+against ``3.7``, with a subset of tests additionally being run against
+``3.6`` and ``3.8``.
 
 Cloud-native!
 -------------
@@ -228,7 +229,7 @@ Note that the development web
 server (`superset run` or `flask run`) is not intended for production use.
 
 If not using gunicorn, you may want to disable the use of flask-compress
-by setting `ENABLE_FLASK_COMPRESS = False` in your `superset_config.py`
+by setting `COMPRESS_REGISTER = False` in your `superset_config.py`
 
 Flask-AppBuilder Permissions
 ----------------------------
@@ -482,73 +483,67 @@ connect to the databases you want to access through Superset.
 
 Here's a list of some of the recommended packages.
 
-+------------------+---------------------------------------+-------------------------------------------------+
-| database         | pypi package                          | SQLAlchemy URI prefix                           |
-+==================+=======================================+=================================================+
-| Amazon Athena    | ``pip install "PyAthenaJDBC>1.0.9"``  | ``awsathena+jdbc://``                           |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Amazon Athena    | ``pip install "PyAthena>1.2.0"``      | ``awsathena+rest://``                           |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Amazon Redshift  | ``pip install sqlalchemy-redshift``   | ``redshift+psycopg2://``                        |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Apache Drill     | ``pip install sqlalchemy-drill``      | For the REST API:``                             |
-|                  |                                       | ``drill+sadrill://``                            |
-|                  |                                       | For JDBC                                        |
-|                  |                                       | ``drill+jdbc://``                               |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Apache Druid     | ``pip install pydruid``               | ``druid://``                                    |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Apache Hive      | ``pip install pyhive``                | ``hive://``                                     |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Apache Impala    | ``pip install impyla``                | ``impala://``                                   |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Apache Kylin     | ``pip install kylinpy``               | ``kylin://``                                    |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Apache Pinot     | ``pip install pinotdb``               | ``pinot+http://CONTROLLER:5436/``               |
-|                  |                                       | ``query?server=http://CONTROLLER:5983/``        |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Apache Spark SQL | ``pip install pyhive``                | ``jdbc+hive://``                                |
-+------------------+---------------------------------------+-------------------------------------------------+
-| BigQuery         | ``pip install pybigquery``            | ``bigquery://``                                 |
-+------------------+---------------------------------------+-------------------------------------------------+
-| ClickHouse       | ``pip install sqlalchemy-clickhouse`` |                                                 |
-+------------------+---------------------------------------+-------------------------------------------------+
-| CockroachDB      | ``pip install cockroachdb``           | ``cockroachdb://``                              |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Dremio           | ``pip install sqlalchemy_dremio``     | ``dremio://``                                   |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Elasticsearch    | ``pip install elasticsearch-dbapi``   | ``elasticsearch+http://``                       |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Exasol           | ``pip install sqlalchemy-exasol``     | ``exa+pyodbc://``                               |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Google Sheets    | ``pip install gsheetsdb``             | ``gsheets://``                                  |
-+------------------+---------------------------------------+-------------------------------------------------+
-| IBM Db2          | ``pip install ibm_db_sa``             | ``db2+ibm_db://``                               |
-+------------------+---------------------------------------+-------------------------------------------------+
-| MySQL            | ``pip install mysqlclient``           | ``mysql://``                                    |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Oracle           | ``pip install cx_Oracle``             | ``oracle://``                                   |
-+------------------+---------------------------------------+-------------------------------------------------+
-| PostgreSQL       | ``pip install psycopg2``              | ``postgresql+psycopg2://``                      |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Presto           | ``pip install pyhive``                | ``presto://``                                   |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Snowflake        | ``pip install snowflake-sqlalchemy``  | ``snowflake://``                                |
-+------------------+---------------------------------------+-------------------------------------------------+
-| SQLite           |                                       | ``sqlite://``                                   |
-+------------------+---------------------------------------+-------------------------------------------------+
-| SQL Server       | ``pip install pymssql``               | ``mssql://``                                    |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Teradata         | ``pip install sqlalchemy-teradata``   | ``teradata://``                                 |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Vertica          | ``pip install                         |  ``vertica+vertica_python://``                  |
-|                  | sqlalchemy-vertica-python``           |                                                 |
-+------------------+---------------------------------------+-------------------------------------------------+
-| Hana             | ``pip install hdbcli sqlalchemy-hana``|  ``hana://``                                    |
-|                  | or                                    |                                                 |
-|                  | ``pip install apache-superset[hana]`` |                                                 |
-+------------------+---------------------------------------+-------------------------------------------------+
-
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Database         | PyPI package                                                      | SQLAlchemy URI prefix                           |
++==================+===================================================================+=================================================+
+| Amazon Athena    | ``"apache-superset[athena]"``                                     | ``awsathena+jdbc://``                           |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Amazon Redshift  | ``"apache-superset[redshift]"``                                   | ``redshift+psycopg2://``                        |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Apache Drill     | ``"apache-superset[drill]"``                                      | For the REST API:``                             |
+|                  |                                                                   | ``drill+sadrill://``                            |
+|                  |                                                                   | For JDBC                                        |
+|                  |                                                                   | ``drill+jdbc://``                               |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Apache Druid     | ``"apache-superset[druid]"``                                      | ``druid://``                                    |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Apache Hive      | ``"apache-superset[hive]"``                                       | ``hive://``                                     |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Apache Impala    | ``"apache-superset[impala]"``                                     | ``impala://``                                   |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Apache Kylin     | ``"apache-superset[kylin]"``                                      | ``kylin://``                                    |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Apache Pinot     | ``"apache-superset[pinot]"``                                      | ``pinot+http://CONTROLLER:5436/``               |
+|                  |                                                                   | ``query?server=http://CONTROLLER:5983/``        |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Apache Spark SQL | ``"apache-superset[hive]"``                                       | ``jdbc+hive://``                                |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| BigQuery         | ``"apache-superset[bigquery]"``                                   | ``bigquery://``                                 |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| ClickHouse       | ``"apache-superset[clickhouse]"``                                 |                                                 |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| CockroachDB      | ``"apache-superset[cockroachdb]"``                                | ``cockroachdb://``                              |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Dremio           | ``"apache-superset[dremio]"``                                     | ``dremio://``                                   |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Elasticsearch    | ``"apache-superset[elasticsearch]"``                              | ``elasticsearch+http://``                       |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Exasol           | ``"apache-superset[exasol]"``                                     | ``exa+pyodbc://``                               |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Google Sheets    | ``"apache-superset[gsheets]"``                                    | ``gsheets://``                                  |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| IBM Db2          | ``"apache-superset[db2]"``                                        | ``db2+ibm_db://``                               |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| MySQL            | ``"apache-superset[mysql]"``                                      | ``mysql://``                                    |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Oracle           | ``"apache-superset[oracle]"``                                     | ``oracle://``                                   |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| PostgreSQL       | ``"apache-superset[postgres]"``                                   | ``postgresql+psycopg2://``                      |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Presto           | ``"apache-superset[presto]"``                                     | ``presto://``                                   |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| SAP HANA         | ``"apache-superset[hana]"``                                       |  ``hana://``                                    |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Snowflake        | ``"apache-superset[snowflake]"``                                  | ``snowflake://``                                |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| SQLite           |                                                                   | ``sqlite://``                                   |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| SQL Server       | ``"apache-superset[mssql]"``                                      | ``mssql://``                                    |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Teradata         | ``"apache-superset[teradata]"``                                   | ``teradata://``                                 |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
+| Vertica          | ``"apache-superset[vertical]"``                                   |  ``vertica+vertica_python://``                  |
++------------------+-------------------------------------------------------------------+-------------------------------------------------+
 
 Note that many other databases are supported, the main criteria being the
 existence of a functional SqlAlchemy dialect and Python driver. Googling
@@ -562,7 +557,7 @@ The connection string for PostgreSQL looks like this ::
 
     postgresql+psycopg2://{username}:{password}@{host}:{port}/{database}
 
-Additional  may be configured via the ``extra`` field under ``engine_params``. 
+Additional  may be configured via the ``extra`` field under ``engine_params``.
 If you would like to enable mutual SSL here is a sample configuration:
 
 .. code-block:: json
@@ -577,7 +572,7 @@ If you would like to enable mutual SSL here is a sample configuration:
          }
     }
 
-If the key ``sslrootcert`` is present the server's certificate will be verified to be signed by the same Certificate Authority (CA). 
+If the key ``sslrootcert`` is present the server's certificate will be verified to be signed by the same Certificate Authority (CA).
 
 If you would like to enable mutual SSL here is a sample configuration:
 
@@ -1056,7 +1051,7 @@ have the same configuration.
     celery beat --app=superset.tasks.celery_app:app
 
 To setup a result backend, you need to pass an instance of a derivative
-of ``werkzeug.contrib.cache.BaseCache`` to the ``RESULTS_BACKEND``
+of ``from cachelib.base.BaseCache`` to the ``RESULTS_BACKEND``
 configuration key in your ``superset_config.py``. It's possible to use
 Memcached, Redis, S3 (https://pypi.python.org/pypi/s3werkzeugcache),
 memory or the file system (in a single server-type setup or for testing),
@@ -1072,7 +1067,7 @@ look something like:
     RESULTS_BACKEND = S3Cache(S3_CACHE_BUCKET, S3_CACHE_KEY_PREFIX)
 
     # On Redis
-    from werkzeug.contrib.cache import RedisCache
+    from cachelib.redis import RedisCache
     RESULTS_BACKEND = RedisCache(
         host='localhost', port=6379, key_prefix='superset_results')
 

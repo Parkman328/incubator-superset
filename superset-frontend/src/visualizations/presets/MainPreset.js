@@ -29,9 +29,7 @@ import ForceDirectedChartPlugin from '@superset-ui/legacy-plugin-chart-force-dir
 import HeatmapChartPlugin from '@superset-ui/legacy-plugin-chart-heatmap';
 import HistogramChartPlugin from '@superset-ui/legacy-plugin-chart-histogram';
 import HorizonChartPlugin from '@superset-ui/legacy-plugin-chart-horizon';
-import IframeChartPlugin from '@superset-ui/legacy-plugin-chart-iframe';
 import MapBoxChartPlugin from '@superset-ui/legacy-plugin-chart-map-box';
-import MarkupChartPlugin from '@superset-ui/legacy-plugin-chart-markup';
 import PairedTTestChartPlugin from '@superset-ui/legacy-plugin-chart-paired-t-test';
 import ParallelCoordinatesChartPlugin from '@superset-ui/legacy-plugin-chart-parallel-coordinates';
 import PartitionChartPlugin from '@superset-ui/legacy-plugin-chart-partition';
@@ -39,7 +37,7 @@ import PivotTableChartPlugin from '@superset-ui/legacy-plugin-chart-pivot-table'
 import RoseChartPlugin from '@superset-ui/legacy-plugin-chart-rose';
 import SankeyChartPlugin from '@superset-ui/legacy-plugin-chart-sankey';
 import SunburstChartPlugin from '@superset-ui/legacy-plugin-chart-sunburst';
-import TableChartPlugin from '@superset-ui/legacy-plugin-chart-table';
+import TableChartPlugin from '@superset-ui/plugin-chart-table';
 import TreemapChartPlugin from '@superset-ui/legacy-plugin-chart-treemap';
 import { WordCloudChartPlugin } from '@superset-ui/plugin-chart-word-cloud';
 import WorldMapChartPlugin from '@superset-ui/legacy-plugin-chart-world-map';
@@ -87,12 +85,9 @@ export default class MainPreset extends Preset {
         new HeatmapChartPlugin().configure({ key: 'heatmap' }),
         new HistogramChartPlugin().configure({ key: 'histogram' }),
         new HorizonChartPlugin().configure({ key: 'horizon' }),
-        new IframeChartPlugin().configure({ key: 'iframe' }),
         new LineChartPlugin().configure({ key: 'line' }),
         new LineMultiChartPlugin().configure({ key: 'line_multi' }),
         new MapBoxChartPlugin().configure({ key: 'mapbox' }),
-        new MarkupChartPlugin().configure({ key: 'markup' }),
-        new MarkupChartPlugin().configure({ key: 'separator' }),
         new PairedTTestChartPlugin().configure({ key: 'paired_ttest' }),
         new ParallelCoordinatesChartPlugin().configure({ key: 'para' }),
         new PartitionChartPlugin().configure({ key: 'partition' }),

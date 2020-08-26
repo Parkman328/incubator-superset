@@ -30,6 +30,7 @@ import {
   fetchFaveStar,
   saveFaveStar,
   savePublished,
+  setColorSchemeAndUnsavedChanges,
   fetchCharts,
   updateCss,
   onChange,
@@ -71,6 +72,7 @@ function mapStateToProps({
     ).text,
     expandedSlices: dashboardState.expandedSlices,
     refreshFrequency: dashboardState.refreshFrequency,
+    shouldPersistRefreshFrequency: !!dashboardState.shouldPersistRefreshFrequency,
     customCss: dashboardState.css,
     colorNamespace: dashboardState.colorNamespace,
     colorScheme: dashboardState.colorScheme,
@@ -82,7 +84,8 @@ function mapStateToProps({
     hasUnsavedChanges: !!dashboardState.hasUnsavedChanges,
     maxUndoHistoryExceeded: !!dashboardState.maxUndoHistoryExceeded,
     editMode: !!dashboardState.editMode,
-    builderPaneType: dashboardState.builderPaneType,
+    slug: dashboardInfo.slug,
+    metadata: dashboardInfo.metadata,
   };
 }
 
@@ -96,6 +99,7 @@ function mapDispatchToProps(dispatch) {
       onRedo: redoLayoutAction,
       setEditMode,
       showBuilderPane,
+      setColorSchemeAndUnsavedChanges,
       fetchFaveStar,
       saveFaveStar,
       savePublished,
