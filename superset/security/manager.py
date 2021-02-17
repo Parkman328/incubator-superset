@@ -17,6 +17,7 @@
 # pylint: disable=too-few-public-methods
 """A set of constants and methods to manage permissions and security"""
 import logging
+import re
 from typing import Any, Callable, cast, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 
 from flask import current_app, g
@@ -26,6 +27,8 @@ from flask_appbuilder.security.sqla.models import (
     assoc_permissionview_role,
     assoc_user_role,
     PermissionView,
+    Role,
+    User,
 )
 from flask_appbuilder.security.views import (
     PermissionModelView,
@@ -35,8 +38,9 @@ from flask_appbuilder.security.views import (
     ViewMenuModelView,
 )
 from flask_appbuilder.widgets import ListWidget
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.engine.base import Connection
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.mapper import Mapper
 from sqlalchemy.orm.query import Query as SqlaQuery
 
@@ -45,7 +49,7 @@ from superset.connectors.connector_registry import ConnectorRegistry
 from superset.constants import RouteMethod
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.exceptions import SupersetSecurityException
-from superset.utils.core import DatasourceName
+from superset.utils.core import DatasourceName, RowLevelSecurityFilterType
 
 if TYPE_CHECKING:
     from superset.common.query_context import QueryContext
@@ -56,12 +60,13 @@ if TYPE_CHECKING:
     from superset.sql_parse import Table
     from superset.viz import BaseViz
 
+
 logger = logging.getLogger(__name__)
 
 
 class SupersetSecurityListWidget(ListWidget):
     """
-        Redeclaring to avoid circular imports
+    Redeclaring to avoid circular imports
     """
 
     template = "superset/fab_overrides/list.html"
@@ -69,8 +74,8 @@ class SupersetSecurityListWidget(ListWidget):
 
 class SupersetRoleListWidget(ListWidget):
     """
-        Role model view from FAB already uses a custom list widget override
-        So we override the override
+    Role model view from FAB already uses a custom list widget override
+    So we override the override
     """
 
     template = "superset/fab_overrides/list_role.html"
@@ -106,7 +111,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
     SecurityManager
 ):
     userstatschartview = None
-    READ_ONLY_MODEL_VIEWS = {"DatabaseAsync", "DatabaseView", "DruidClusterModelView"}
+    READ_ONLY_MODEL_VIEWS = {"Database", "DruidClusterModelView", "DynamicPlugin"}
 
     USER_MODEL_VIEWS = {
         "UserDBModelView",
@@ -117,9 +122,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
     }
 
     GAMMA_READ_ONLY_MODEL_VIEWS = {
-        "SqlMetricInlineView",
-        "TableColumnInlineView",
-        "TableModelView",
+        "Dataset",
         "DruidColumnInlineView",
         "DruidDatasourceModelView",
         "DruidMetricInlineView",
@@ -132,8 +135,10 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         "Refresh Druid Metadata",
         "ResetPasswordView",
         "RoleModelView",
-        "LogModelView",
+        "Log",
         "Security",
+        "Row Level Security",
+        "Row Level Security Filters",
         "RowLevelSecurityFiltersModelView",
     } | USER_MODEL_VIEWS
 
@@ -155,7 +160,13 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         "all_query_access",
     }
 
-    READ_ONLY_PERMISSION = {"can_show", "can_list", "can_get", "can_external_metadata"}
+    READ_ONLY_PERMISSION = {
+        "can_show",
+        "can_list",
+        "can_get",
+        "can_external_metadata",
+        "can_read",
+    }
 
     ALPHA_ONLY_PERMISSIONS = {
         "muldelete",
@@ -170,7 +181,16 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         "metric_access",
     }
 
-    ACCESSIBLE_PERMS = {"can_userinfo"}
+    ACCESSIBLE_PERMS = {"can_userinfo", "resetmypassword"}
+
+    data_access_permissions = (
+        "database_access",
+        "schema_access",
+        "datasource_access",
+        "all_datasource_access",
+        "all_database_access",
+        "all_query_access",
+    )
 
     def get_schema_perm(  # pylint: disable=no-self-use
         self, database: Union["Database", str], schema: Optional[str] = None
@@ -541,7 +561,6 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         Creates missing FAB permissions for datasources, schemas and metrics.
         """
 
-        from superset.connectors.base.models import BaseMetric
         from superset.models import core as models
 
         logger.info("Fetching a set of all perms to lookup which ones are missing")
@@ -565,11 +584,6 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         databases = self.get_session.query(models.Database).all()
         for database in databases:
             merge_pv("database_access", database.perm)
-
-        logger.info("Creating missing metrics permissions")
-        metrics: List[BaseMetric] = []
-        for datasource_class in ConnectorRegistry.sources.values():
-            metrics += list(self.get_session.query(datasource_class.metric_class).all())
 
     def clean_perms(self) -> None:
         """
@@ -609,14 +623,80 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         self.set_role("granter", self._is_granter_pvm)
         self.set_role("sql_lab", self._is_sql_lab_pvm)
 
+        # Configure public role
+        if conf["PUBLIC_ROLE_LIKE"]:
+            self.copy_role(conf["PUBLIC_ROLE_LIKE"], self.auth_role_public, merge=True)
         if conf.get("PUBLIC_ROLE_LIKE_GAMMA", False):
-            self.set_role("Public", self._is_gamma_pvm)
+            logger.warning(
+                "The config `PUBLIC_ROLE_LIKE_GAMMA` is deprecated and will be removed "
+                "in Superset 1.0. Please use `PUBLIC_ROLE_LIKE` instead."
+            )
+            self.copy_role("Gamma", self.auth_role_public, merge=True)
 
         self.create_missing_perms()
 
         # commit role and view menu updates
         self.get_session.commit()
         self.clean_perms()
+
+    def _get_pvms_from_builtin_role(self, role_name: str) -> List[PermissionView]:
+        """
+        Gets a list of model PermissionView permissions infered from a builtin role
+        definition
+        """
+        role_from_permissions_names = self.builtin_roles.get(role_name, [])
+        all_pvms = self.get_session.query(PermissionView).all()
+        role_from_permissions = []
+        for pvm_regex in role_from_permissions_names:
+            view_name_regex = pvm_regex[0]
+            permission_name_regex = pvm_regex[1]
+            for pvm in all_pvms:
+                if re.match(view_name_regex, pvm.view_menu.name) and re.match(
+                    permission_name_regex, pvm.permission.name
+                ):
+                    if pvm not in role_from_permissions:
+                        role_from_permissions.append(pvm)
+        return role_from_permissions
+
+    def find_roles_by_id(self, role_ids: List[int]) -> List[Role]:
+        """
+        Find a List of models by a list of ids, if defined applies `base_filter`
+        """
+        query = self.get_session.query(Role).filter(Role.id.in_(role_ids))
+        return query.all()
+
+    def copy_role(
+        self, role_from_name: str, role_to_name: str, merge: bool = True
+    ) -> None:
+        """
+        Copies permissions from a role to another.
+
+        Note: Supports regex defined builtin roles
+
+        :param role_from_name: The FAB role name from where the permissions are taken
+        :param role_to_name: The FAB role name from where the permissions are copied to
+        :param merge: If merge is true, keep data access permissions
+            if they already exist on the target role
+        """
+
+        logger.info("Copy/Merge %s to %s", role_from_name, role_to_name)
+        # If it's a builtin role extract permissions from it
+        if role_from_name in self.builtin_roles:
+            role_from_permissions = self._get_pvms_from_builtin_role(role_from_name)
+        else:
+            role_from_permissions = list(self.find_role(role_from_name).permissions)
+        role_to = self.add_role(role_to_name)
+        # If merge, recover existing data access permissions
+        if merge:
+            for permission_view in role_to.permissions:
+                if (
+                    permission_view not in role_from_permissions
+                    and permission_view.permission.name in self.data_access_permissions
+                ):
+                    role_from_permissions.append(permission_view)
+        role_to.permissions = role_from_permissions
+        self.get_session.merge(role_to)
+        self.get_session.commit()
 
     def set_role(
         self, role_name: str, pvm_check: Callable[[PermissionView], bool]
@@ -629,16 +709,17 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         """
 
         logger.info("Syncing %s perms", role_name)
-        sesh = self.get_session
-        pvms = sesh.query(PermissionView).all()
+        pvms = self.get_session.query(PermissionView).all()
         pvms = [p for p in pvms if p.permission and p.view_menu]
         role = self.add_role(role_name)
-        role_pvms = [p for p in pvms if pvm_check(p)]
+        role_pvms = [
+            permission_view for permission_view in pvms if pvm_check(permission_view)
+        ]
         role.permissions = role_pvms
-        sesh.merge(role)
-        sesh.commit()
+        self.get_session.merge(role)
+        self.get_session.commit()
 
-    def _is_admin_only(self, pvm: Model) -> bool:
+    def _is_admin_only(self, pvm: PermissionView) -> bool:
         """
         Return True if the FAB permission/view is accessible to only Admin users,
         False otherwise.
@@ -659,7 +740,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
             or pvm.permission.name in self.ADMIN_ONLY_PERMISSIONS
         )
 
-    def _is_alpha_only(self, pvm: PermissionModelView) -> bool:
+    def _is_alpha_only(self, pvm: PermissionView) -> bool:
         """
         Return True if the FAB permission/view is accessible to only Alpha users,
         False otherwise.
@@ -678,7 +759,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
             or pvm.permission.name in self.ALPHA_ONLY_PERMISSIONS
         )
 
-    def _is_accessible_to_all(self, pvm: PermissionModelView) -> bool:
+    def _is_accessible_to_all(self, pvm: PermissionView) -> bool:
         """
         Return True if the FAB permission/view is accessible to all, False
         otherwise.
@@ -689,7 +770,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
 
         return pvm.permission.name in self.ACCESSIBLE_PERMS
 
-    def _is_admin_pvm(self, pvm: PermissionModelView) -> bool:
+    def _is_admin_pvm(self, pvm: PermissionView) -> bool:
         """
         Return True if the FAB permission/view is Admin user related, False
         otherwise.
@@ -700,7 +781,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
 
         return not self._is_user_defined_permission(pvm)
 
-    def _is_alpha_pvm(self, pvm: PermissionModelView) -> bool:
+    def _is_alpha_pvm(self, pvm: PermissionView) -> bool:
         """
         Return True if the FAB permission/view is Alpha user related, False
         otherwise.
@@ -713,7 +794,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
             self._is_user_defined_permission(pvm) or self._is_admin_only(pvm)
         ) or self._is_accessible_to_all(pvm)
 
-    def _is_gamma_pvm(self, pvm: PermissionModelView) -> bool:
+    def _is_gamma_pvm(self, pvm: PermissionView) -> bool:
         """
         Return True if the FAB permission/view is Gamma user related, False
         otherwise.
@@ -728,7 +809,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
             or self._is_alpha_only(pvm)
         ) or self._is_accessible_to_all(pvm)
 
-    def _is_sql_lab_pvm(self, pvm: PermissionModelView) -> bool:
+    def _is_sql_lab_pvm(self, pvm: PermissionView) -> bool:
         """
         Return True if the FAB permission/view is SQL Lab related, False
         otherwise.
@@ -756,7 +837,7 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
         )
 
     def _is_granter_pvm(  # pylint: disable=no-self-use
-        self, pvm: PermissionModelView
+        self, pvm: PermissionView
     ) -> bool:
         """
         Return True if the user can grant the FAB permission/view, False
@@ -920,9 +1001,22 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
                     self.get_datasource_access_error_object(datasource)
                 )
 
-    def get_rls_filters(  # pylint: disable=no-self-use
-        self, table: "BaseDatasource"
-    ) -> List[SqlaQuery]:
+    def get_user_by_username(
+        self, username: str, session: Session = None
+    ) -> Optional[User]:
+        """
+        Retrieves a user by it's username case sensitive. Optional session parameter
+        utility method normally useful for celery tasks where the session
+        need to be scoped
+        """
+        session = session or self.get_session
+        return (
+            session.query(self.user_model)
+            .filter(self.user_model.username == username)
+            .one_or_none()
+        )
+
+    def get_rls_filters(self, table: "BaseDatasource") -> List[SqlaQuery]:
         """
         Retrieves the appropriate row level security filters for the current user and
         the passed table.
@@ -942,8 +1036,23 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
                 .filter(assoc_user_role.c.user_id == g.user.id)
                 .subquery()
             )
-            filter_roles = (
+            regular_filter_roles = (
                 self.get_session.query(RLSFilterRoles.c.rls_filter_id)
+                .join(RowLevelSecurityFilter)
+                .filter(
+                    RowLevelSecurityFilter.filter_type
+                    == RowLevelSecurityFilterType.REGULAR
+                )
+                .filter(RLSFilterRoles.c.role_id.in_(user_roles))
+                .subquery()
+            )
+            base_filter_roles = (
+                self.get_session.query(RLSFilterRoles.c.rls_filter_id)
+                .join(RowLevelSecurityFilter)
+                .filter(
+                    RowLevelSecurityFilter.filter_type
+                    == RowLevelSecurityFilterType.BASE
+                )
                 .filter(RLSFilterRoles.c.role_id.in_(user_roles))
                 .subquery()
             )
@@ -954,10 +1063,25 @@ class SupersetSecurityManager(  # pylint: disable=too-many-public-methods
             )
             query = (
                 self.get_session.query(
-                    RowLevelSecurityFilter.id, RowLevelSecurityFilter.clause
+                    RowLevelSecurityFilter.id,
+                    RowLevelSecurityFilter.group_key,
+                    RowLevelSecurityFilter.clause,
                 )
                 .filter(RowLevelSecurityFilter.id.in_(filter_tables))
-                .filter(RowLevelSecurityFilter.id.in_(filter_roles))
+                .filter(
+                    or_(
+                        and_(
+                            RowLevelSecurityFilter.filter_type
+                            == RowLevelSecurityFilterType.REGULAR,
+                            RowLevelSecurityFilter.id.in_(regular_filter_roles),
+                        ),
+                        and_(
+                            RowLevelSecurityFilter.filter_type
+                            == RowLevelSecurityFilterType.BASE,
+                            RowLevelSecurityFilter.id.notin_(base_filter_roles),
+                        ),
+                    )
+                )
             )
             return query.all()
         return []

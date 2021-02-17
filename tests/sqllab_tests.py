@@ -18,18 +18,22 @@
 """Unit tests for Sql Lab"""
 import json
 from datetime import datetime, timedelta
+
+import pytest
 from parameterized import parameterized
 from random import random
 from unittest import mock
-
+from superset.extensions import db
 import prison
 
-import tests.test_app
 from superset import db, security_manager
 from superset.connectors.sqla.models import SqlaTable
 from superset.db_engine_specs import BaseEngineSpec
-from superset.models.sql_lab import Query
+from superset.errors import ErrorLevel, SupersetErrorType
+from superset.models.core import Database
+from superset.models.sql_lab import Query, SavedQuery
 from superset.result_set import SupersetResultSet
+from superset.sql_lab import execute_sql_statements, SqlLabException
 from superset.sql_parse import CtasMethod
 from superset.utils.core import (
     datetime_to_epoch,
@@ -38,10 +42,8 @@ from superset.utils.core import (
 )
 
 from .base_tests import SupersetTestCase
-from .sqllab_test_util import (
-    setup_presto_if_needed,
-    CTAS_SCHEMA_NAME,
-)  # noqa autoused fixture
+from .conftest import CTAS_SCHEMA_NAME
+from tests.fixtures.birth_names_dashboard import load_birth_names_dashboard_with_slices
 
 QUERY_1 = "SELECT * FROM birth_names LIMIT 1"
 QUERY_2 = "SELECT * FROM NO_TABLE"
@@ -65,6 +67,7 @@ class TestSqlLab(SupersetTestCase):
         db.session.commit()
         db.session.close()
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_sql_json(self):
         self.login("admin")
 
@@ -72,9 +75,52 @@ class TestSqlLab(SupersetTestCase):
         self.assertLess(0, len(data["data"]))
 
         data = self.run_sql("SELECT * FROM unexistant_table", "2")
-        self.assertLess(0, len(data["error"]))
+        assert (
+            data["errors"][0]["error_type"] == SupersetErrorType.GENERIC_DB_ENGINE_ERROR
+        )
+        assert data["errors"][0]["level"] == ErrorLevel.ERROR
+        assert data["errors"][0]["extra"] == {
+            "issue_codes": [
+                {
+                    "code": 1002,
+                    "message": "Issue 1002 - The database returned an unexpected error.",
+                }
+            ]
+        }
+
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
+    def test_sql_json_to_saved_query_info(self):
+        """
+        SQLLab: Test SQLLab query execution info propagation to saved queries
+        """
+        from freezegun import freeze_time
+
+        self.login("admin")
+
+        sql_statement = "SELECT * FROM birth_names LIMIT 10"
+        examples_db_id = get_example_database().id
+        saved_query = SavedQuery(db_id=examples_db_id, sql=sql_statement)
+        db.session.add(saved_query)
+        db.session.commit()
+
+        with freeze_time("2020-01-01T00:00:00Z"):
+            self.run_sql(sql_statement, "1")
+            saved_query_ = (
+                db.session.query(SavedQuery)
+                .filter(
+                    SavedQuery.db_id == examples_db_id, SavedQuery.sql == sql_statement
+                )
+                .one_or_none()
+            )
+            assert saved_query_.rows is not None
+            assert saved_query_.last_run == datetime.now()
+
+            # Rollback changes
+            db.session.delete(saved_query_)
+            db.session.commit()
 
     @parameterized.expand([CtasMethod.TABLE, CtasMethod.VIEW])
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_sql_json_cta_dynamic_db(self, ctas_method):
         examples_db = get_example_database()
         if examples_db.backend == "sqlite":
@@ -106,8 +152,9 @@ class TestSqlLab(SupersetTestCase):
             data = engine.execute(
                 f"SELECT * FROM admin_database.{tmp_table_name}"
             ).fetchall()
+            names_count = engine.execute(f"SELECT COUNT(*) FROM birth_names").first()
             self.assertEqual(
-                100, len(data)
+                names_count[0], len(data)
             )  # SQL_MAX_ROW not applied due to the SQLLAB_CTAS_NO_LIMIT set to True
 
             # cleanup
@@ -115,6 +162,7 @@ class TestSqlLab(SupersetTestCase):
             examples_db.allow_ctas = old_allow_ctas
             db.session.commit()
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_multi_sql(self):
         self.login("admin")
 
@@ -125,12 +173,14 @@ class TestSqlLab(SupersetTestCase):
         data = self.run_sql(multi_sql, "2234")
         self.assertLess(0, len(data["data"]))
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_explain(self):
         self.login("admin")
 
         data = self.run_sql("EXPLAIN SELECT * FROM birth_names", "1")
         self.assertLess(0, len(data["data"]))
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_sql_json_has_access(self):
         examples_db = get_example_database()
         examples_db_permission_view = security_manager.add_permission_view_menu(
@@ -272,6 +322,7 @@ class TestSqlLab(SupersetTestCase):
         self.assertEqual(1, len(data))
         self.assertEqual(data[0]["userId"], user_id)
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_search_query_on_status(self):
         self.run_some_queries()
         self.login("admin")
@@ -384,6 +435,31 @@ class TestSqlLab(SupersetTestCase):
         table_id = resp["table_id"]
         table = db.session.query(SqlaTable).filter_by(id=table_id).one()
         self.assertEqual([owner.username for owner in table.owners], ["admin"])
+        view_menu = security_manager.find_view_menu(table.get_perm())
+        assert view_menu is not None
+
+        # Cleanup
+        db.session.delete(table)
+        db.session.commit()
+
+    def test_sqllab_viz_bad_payload(self):
+        self.login("admin")
+        payload = {
+            "chartType": "dist_bar",
+            "schema": "superset",
+            "columns": [
+                {"is_date": False, "type": "STRING", "name": f"viz_type_{random()}"},
+                {"is_date": False, "type": "OBJECT", "name": f"ccount_{random()}"},
+            ],
+            "sql": """\
+                SELECT *
+                FROM birth_names
+                LIMIT 10""",
+        }
+        data = {"data": json.dumps(payload)}
+        url = "/superset/sqllab_viz/"
+        response = self.client.post(url, data=data, follow_redirects=True)
+        assert response.status_code == 400
 
     def test_sqllab_table_viz(self):
         self.login("admin")
@@ -416,6 +492,7 @@ class TestSqlLab(SupersetTestCase):
         )
         db.session.commit()
 
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
     def test_sql_limit(self):
         self.login("admin")
         test_limit = 1
@@ -500,7 +577,6 @@ class TestSqlLab(SupersetTestCase):
 
         url = "/api/v1/query/"
         data = self.get_json_resp(url)
-        admin = security_manager.find_user("admin")
         self.assertEqual(3, len(data["result"]))
 
     def test_api_database(self):
@@ -518,8 +594,202 @@ class TestSqlLab(SupersetTestCase):
             "page_size": -1,
         }
         url = f"api/v1/database/?q={prison.dumps(arguments)}"
+
         self.assertEqual(
             {"examples", "fake_db_100", "main"},
             {r.get("database_name") for r in self.get_json_resp(url)["result"]},
         )
         self.delete_fake_db()
+
+    @pytest.mark.usefixtures("load_birth_names_dashboard_with_slices")
+    @mock.patch.dict(
+        "superset.extensions.feature_flag_manager._feature_flags",
+        {"ENABLE_TEMPLATE_PROCESSING": True},
+        clear=True,
+    )
+    def test_sql_json_parameter_error(self):
+        self.login("admin")
+
+        data = self.run_sql(
+            "SELECT * FROM birth_names WHERE state = '{{ state }}' LIMIT 10",
+            "1",
+            template_params=json.dumps({"state": "CA"}),
+        )
+        assert data["status"] == "success"
+
+        data = self.run_sql(
+            "SELECT * FROM birth_names WHERE state = '{{ stat }}' LIMIT 10",
+            "2",
+            template_params=json.dumps({"state": "CA"}),
+        )
+        assert data["errors"][0]["error_type"] == "MISSING_TEMPLATE_PARAMS_ERROR"
+        assert data["errors"][0]["extra"] == {
+            "issue_codes": [
+                {
+                    "code": 1006,
+                    "message": "Issue 1006 - One or more parameters specified in the query are missing.",
+                }
+            ],
+            "template_parameters": {"state": "CA"},
+            "undefined_parameters": ["stat"],
+        }
+
+    @mock.patch("superset.sql_lab.get_query")
+    @mock.patch("superset.sql_lab.execute_sql_statement")
+    def test_execute_sql_statements(self, mock_execute_sql_statement, mock_get_query):
+        sql = """
+            -- comment
+            SET @value = 42;
+            SELECT @value AS foo;
+            -- comment
+        """
+        mock_session = mock.MagicMock()
+        mock_query = mock.MagicMock()
+        mock_query.database.allow_run_async = False
+        mock_cursor = mock.MagicMock()
+        mock_query.database.get_sqla_engine.return_value.raw_connection.return_value.cursor.return_value = (
+            mock_cursor
+        )
+        mock_query.database.db_engine_spec.run_multiple_statements_as_one = False
+        mock_get_query.return_value = mock_query
+
+        execute_sql_statements(
+            query_id=1,
+            rendered_query=sql,
+            return_results=True,
+            store_results=False,
+            user_name="admin",
+            session=mock_session,
+            start_time=None,
+            expand_data=False,
+            log_params=None,
+        )
+        mock_execute_sql_statement.assert_has_calls(
+            [
+                mock.call(
+                    "SET @value = 42",
+                    mock_query,
+                    "admin",
+                    mock_session,
+                    mock_cursor,
+                    None,
+                    False,
+                ),
+                mock.call(
+                    "SELECT @value AS foo",
+                    mock_query,
+                    "admin",
+                    mock_session,
+                    mock_cursor,
+                    None,
+                    False,
+                ),
+            ]
+        )
+
+    @mock.patch("superset.sql_lab.get_query")
+    @mock.patch("superset.sql_lab.execute_sql_statement")
+    def test_execute_sql_statements_ctas(
+        self, mock_execute_sql_statement, mock_get_query
+    ):
+        sql = """
+            -- comment
+            SET @value = 42;
+            SELECT @value AS foo;
+            -- comment
+        """
+        mock_session = mock.MagicMock()
+        mock_query = mock.MagicMock()
+        mock_query.database.allow_run_async = False
+        mock_cursor = mock.MagicMock()
+        mock_query.database.get_sqla_engine.return_value.raw_connection.return_value.cursor.return_value = (
+            mock_cursor
+        )
+        mock_query.database.db_engine_spec.run_multiple_statements_as_one = False
+        mock_get_query.return_value = mock_query
+
+        # set the query to CTAS
+        mock_query.select_as_cta = True
+        mock_query.ctas_method = CtasMethod.TABLE
+
+        execute_sql_statements(
+            query_id=1,
+            rendered_query=sql,
+            return_results=True,
+            store_results=False,
+            user_name="admin",
+            session=mock_session,
+            start_time=None,
+            expand_data=False,
+            log_params=None,
+        )
+        mock_execute_sql_statement.assert_has_calls(
+            [
+                mock.call(
+                    "SET @value = 42",
+                    mock_query,
+                    "admin",
+                    mock_session,
+                    mock_cursor,
+                    None,
+                    False,
+                ),
+                mock.call(
+                    "SELECT @value AS foo",
+                    mock_query,
+                    "admin",
+                    mock_session,
+                    mock_cursor,
+                    None,
+                    True,  # apply_ctas
+                ),
+            ]
+        )
+
+        # try invalid CTAS
+        sql = "DROP TABLE my_table"
+        with pytest.raises(SqlLabException) as excinfo:
+            execute_sql_statements(
+                query_id=1,
+                rendered_query=sql,
+                return_results=True,
+                store_results=False,
+                user_name="admin",
+                session=mock_session,
+                start_time=None,
+                expand_data=False,
+                log_params=None,
+            )
+        assert str(excinfo.value) == (
+            "CTAS (create table as select) can only be run with "
+            "a query where the last statement is a SELECT. Please "
+            "make sure your query has a SELECT as its last "
+            "statement. Then, try running your query again."
+        )
+
+        # try invalid CVAS
+        mock_query.ctas_method = CtasMethod.VIEW
+        sql = """
+            -- comment
+            SET @value = 42;
+            SELECT @value AS foo;
+            -- comment
+        """
+        with pytest.raises(SqlLabException) as excinfo:
+            execute_sql_statements(
+                query_id=1,
+                rendered_query=sql,
+                return_results=True,
+                store_results=False,
+                user_name="admin",
+                session=mock_session,
+                start_time=None,
+                expand_data=False,
+                log_params=None,
+            )
+        assert str(excinfo.value) == (
+            "CVAS (create view as select) can only be run with a "
+            "query with a single SELECT statement. Please make "
+            "sure your query has only a SELECT statement. Then, "
+            "try running your query again."
+        )

@@ -17,14 +17,15 @@
  * under the License.
  */
 import React from 'react';
-import { shallow, ShallowWrapper } from 'enzyme';
-import { Button } from 'react-bootstrap';
+import { ReactWrapper } from 'enzyme';
+import Button from 'src/components/Button';
 import Select from 'src/components/Select';
 import AddSliceContainer, {
   AddSliceContainerProps,
   AddSliceContainerState,
 } from 'src/addSlice/AddSliceContainer';
 import VizTypeControl from 'src/explore/components/controls/VizTypeControl';
+import { styledMount as mount } from 'spec/helpers/theming';
 
 const defaultProps = {
   datasources: [
@@ -34,14 +35,18 @@ const defaultProps = {
 };
 
 describe('AddSliceContainer', () => {
-  let wrapper: ShallowWrapper<
+  let wrapper: ReactWrapper<
     AddSliceContainerProps,
     AddSliceContainerState,
     AddSliceContainer
   >;
 
   beforeEach(() => {
-    wrapper = shallow(<AddSliceContainer {...defaultProps} />);
+    wrapper = mount(<AddSliceContainer {...defaultProps} />) as ReactWrapper<
+      AddSliceContainerProps,
+      AddSliceContainerState,
+      AddSliceContainer
+    >;
   });
 
   it('uses table as default visType', () => {
@@ -59,7 +64,7 @@ describe('AddSliceContainer', () => {
 
   it('renders a disabled button if no datasource is selected', () => {
     expect(
-      wrapper.find(Button).dive().find('.btn[disabled=true]'),
+      wrapper.find(Button).find({ disabled: true }).hostNodes(),
     ).toHaveLength(1);
   });
 
@@ -71,8 +76,8 @@ describe('AddSliceContainer', () => {
       datasourceType: datasourceValue.split('__')[1],
     });
     expect(
-      wrapper.find(Button).dive().find('.btn[disabled=false]'),
-    ).toHaveLength(1);
+      wrapper.find(Button).find({ disabled: true }).hostNodes(),
+    ).toHaveLength(0);
   });
 
   it('formats explore url', () => {

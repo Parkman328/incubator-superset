@@ -28,7 +28,7 @@ import {
 
 export default function getInitialState(bootstrapData) {
   const { form_data: rawFormData } = bootstrapData;
-  const slice = bootstrapData.slice;
+  const { slice } = bootstrapData;
   const sliceName = slice ? slice.slice_name : null;
   const bootstrappedState = {
     ...bootstrapData,
@@ -72,7 +72,7 @@ export default function getInitialState(bootstrapData) {
         latestQueryFormData: getFormDataFromControls(controls),
         sliceFormData,
         queryController: null,
-        queryResponse: null,
+        queriesResponse: null,
         triggerQuery: false,
         lastRendered: 0,
       },

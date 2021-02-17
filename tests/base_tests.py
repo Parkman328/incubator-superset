@@ -18,14 +18,18 @@
 """Unit tests for Superset"""
 import imp
 import json
+from contextlib import contextmanager
 from typing import Any, Dict, Union, List, Optional
 from unittest.mock import Mock, patch
 
 import pandas as pd
+import pytest
 from flask import Response
 from flask_appbuilder.security.sqla import models as ab_models
 from flask_testing import TestCase
+from sqlalchemy.ext.declarative.api import DeclarativeMeta
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import func
 
 from tests.test_app import app
 from superset.sql_parse import CtasMethod
@@ -42,6 +46,7 @@ from superset.utils.core import get_example_database
 from superset.views.base_api import BaseSupersetModelRestApi
 
 FAKE_DB_NAME = "fake_db_100"
+test_client = app.test_client()
 
 
 def login(client: Any, username: str = "admin", password: str = "general"):
@@ -69,13 +74,50 @@ def get_resp(
     return resp.data.decode("utf-8")
 
 
-class SupersetTestCase(TestCase):
+def post_assert_metric(
+    client: Any, uri: str, data: Dict[str, Any], func_name: str
+) -> Response:
+    """
+    Simple client post with an extra assertion for statsd metrics
 
+    :param client: test client for superset api requests
+    :param uri: The URI to use for the HTTP POST
+    :param data: The JSON data payload to be posted
+    :param func_name: The function name that the HTTP POST triggers
+    for the statsd metric assertion
+    :return: HTTP Response
+    """
+    with patch.object(
+        BaseSupersetModelRestApi, "incr_stats", return_value=None
+    ) as mock_method:
+        rv = client.post(uri, json=data)
+    if 200 <= rv.status_code < 400:
+        mock_method.assert_called_once_with("success", func_name)
+    else:
+        mock_method.assert_called_once_with("error", func_name)
+    return rv
+
+
+def get_table_by_name(name: str) -> SqlaTable:
+    return db.session.query(SqlaTable).filter_by(table_name=name).one()
+
+
+@pytest.fixture
+def logged_in_admin():
+    """Fixture with app context and logged in admin user."""
+    with app.app_context():
+        login(test_client, username="admin")
+        yield
+        test_client.get("/logout/", follow_redirects=True)
+
+
+class SupersetTestCase(TestCase):
     default_schema_backend_map = {
         "sqlite": "main",
         "mysql": "superset",
         "postgresql": "public",
         "presto": "default",
+        "hive": "default",
     }
 
     maxDiff = -1
@@ -84,7 +126,22 @@ class SupersetTestCase(TestCase):
         return app
 
     @staticmethod
-    def create_user_with_roles(username: str, roles: List[str]):
+    def get_nonexistent_numeric_id(model):
+        return (db.session.query(func.max(model.id)).scalar() or 0) + 1
+
+    @staticmethod
+    def get_birth_names_dataset():
+        example_db = get_example_database()
+        return (
+            db.session.query(SqlaTable)
+            .filter_by(database=example_db, table_name="birth_names")
+            .one()
+        )
+
+    @staticmethod
+    def create_user_with_roles(
+        username: str, roles: List[str], should_create_roles: bool = False
+    ):
         user_to_create = security_manager.find_user(username)
         if not user_to_create:
             security_manager.add_user(
@@ -98,7 +155,12 @@ class SupersetTestCase(TestCase):
             db.session.commit()
             user_to_create = security_manager.find_user(username)
             assert user_to_create
-        user_to_create.roles = [security_manager.find_role(r) for r in roles]
+        user_to_create.roles = []
+        for chosen_user_role in roles:
+            if should_create_roles:
+                ## copy role from gamma but without data permissions
+                security_manager.copy_role("Gamma", chosen_user_role, merge=False)
+            user_to_create.roles.append(security_manager.find_role(chosen_user_role))
         db.session.commit()
         return user_to_create
 
@@ -121,6 +183,15 @@ class SupersetTestCase(TestCase):
         user = (
             db.session.query(security_manager.user_model)
             .filter_by(username=username)
+            .one_or_none()
+        )
+        return user
+
+    @staticmethod
+    def get_role(name: str) -> Optional[ab_models.User]:
+        user = (
+            db.session.query(security_manager.role_model)
+            .filter_by(name=name)
             .one_or_none()
         )
         return user
@@ -183,7 +254,7 @@ class SupersetTestCase(TestCase):
 
     @staticmethod
     def get_table_by_name(name: str) -> SqlaTable:
-        return db.session.query(SqlaTable).filter_by(table_name=name).one()
+        return get_table_by_name(name)
 
     @staticmethod
     def get_database_by_id(db_id: int) -> Database:
@@ -239,7 +310,11 @@ class SupersetTestCase(TestCase):
         self.client.get("/logout/", follow_redirects=True)
 
     def grant_public_access_to_table(self, table):
-        public_role = security_manager.find_role("Public")
+        role_name = "Public"
+        self.grant_role_access_to_table(table, role_name)
+
+    def grant_role_access_to_table(self, table, role_name):
+        role = security_manager.find_role(role_name)
         perms = db.session.query(ab_models.PermissionView).all()
         for perm in perms:
             if (
@@ -247,10 +322,14 @@ class SupersetTestCase(TestCase):
                 and perm.view_menu
                 and table.perm in perm.view_menu.name
             ):
-                security_manager.add_permission_role(public_role, perm)
+                security_manager.add_permission_role(role, perm)
 
     def revoke_public_access_to_table(self, table):
-        public_role = security_manager.find_role("Public")
+        role_name = "Public"
+        self.revoke_role_access_to_table(role_name, table)
+
+    def revoke_role_access_to_table(self, role_name, table):
+        public_role = security_manager.find_role(role_name)
         perms = db.session.query(ab_models.PermissionView).all()
         for perm in perms:
             if (
@@ -279,6 +358,7 @@ class SupersetTestCase(TestCase):
         tmp_table_name=None,
         schema=None,
         ctas_method=CtasMethod.TABLE,
+        template_params="{}",
     ):
         if user_name:
             self.logout()
@@ -291,6 +371,7 @@ class SupersetTestCase(TestCase):
             "queryLimit": query_limit,
             "sql_editor_id": sql_editor_id,
             "ctas_method": ctas_method,
+            "templateParams": template_params,
         }
         if tmp_table_name:
             json_payload["tmp_table_name"] = tmp_table_name
@@ -333,22 +414,22 @@ class SupersetTestCase(TestCase):
         if database:
             db.session.delete(database)
 
-    def create_fake_presto_db(self):
+    def create_fake_db_for_macros(self):
         self.login(username="admin")
-        database_name = "presto"
+        database_name = "db_for_macros_testing"
         db_id = 200
         return self.get_or_create(
             cls=models.Database,
             criteria={"database_name": database_name},
             session=db.session,
-            sqlalchemy_uri="presto://user@host:8080/hive",
+            sqlalchemy_uri="db_for_macros_testing://user@host:8080/hive",
             id=db_id,
         )
 
-    def delete_fake_presto_db(self):
+    def delete_fake_db_for_macros(self):
         database = (
             db.session.query(Database)
-            .filter(Database.database_name == "presto")
+            .filter(Database.database_name == "db_for_macros_testing")
             .scalar()
         )
         if database:
@@ -421,24 +502,7 @@ class SupersetTestCase(TestCase):
     def post_assert_metric(
         self, uri: str, data: Dict[str, Any], func_name: str
     ) -> Response:
-        """
-        Simple client post with an extra assertion for statsd metrics
-
-        :param uri: The URI to use for the HTTP POST
-        :param data: The JSON data payload to be posted
-        :param func_name: The function name that the HTTP POST triggers
-        for the statsd metric assertion
-        :return: HTTP Response
-        """
-        with patch.object(
-            BaseSupersetModelRestApi, "incr_stats", return_value=None
-        ) as mock_method:
-            rv = self.client.post(uri, json=data)
-        if 200 <= rv.status_code < 400:
-            mock_method.assert_called_once_with("success", func_name)
-        else:
-            mock_method.assert_called_once_with("error", func_name)
-        return rv
+        return post_assert_metric(self.client, uri, data, func_name)
 
     def put_assert_metric(
         self, uri: str, data: Dict[str, Any], func_name: str
@@ -461,3 +525,16 @@ class SupersetTestCase(TestCase):
         else:
             mock_method.assert_called_once_with("error", func_name)
         return rv
+
+
+@contextmanager
+def db_insert_temp_object(obj: DeclarativeMeta):
+    """Insert a temporary object in database; delete when done."""
+    session = db.session
+    try:
+        session.add(obj)
+        session.commit()
+        yield obj
+    finally:
+        session.delete(obj)
+        session.commit()

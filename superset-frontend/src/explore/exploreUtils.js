@@ -16,20 +16,25 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
+import { useCallback, useEffect } from 'react';
 /* eslint camelcase: 0 */
 import URI from 'urijs';
-import { buildQueryContext } from '@superset-ui/query';
-import { availableDomains } from 'src/utils/hostNamesConfig';
-import { safeStringify } from 'src/utils/safeStringify';
 import {
+  buildQueryContext,
   getChartBuildQueryRegistry,
   getChartMetadataRegistry,
-} from '@superset-ui/chart';
+} from '@superset-ui/core';
+import { availableDomains } from 'src/utils/hostNamesConfig';
+import { safeStringify } from 'src/utils/safeStringify';
+import { URL_PARAMS } from 'src/constants';
+import { MULTI_OPERATORS } from './constants';
+import { DashboardStandaloneMode } from '../dashboard/util/constants';
 
 const MAX_URL_LENGTH = 8000;
 
 export function getChartKey(explore) {
-  const slice = explore.slice;
+  const { slice } = explore;
   return slice ? slice.slice_id : 0;
 }
 
@@ -96,8 +101,8 @@ export function getExploreLongUrl(
     search[key] = extraSearch[key];
   });
   search.form_data = safeStringify(formData);
-  if (endpointType === 'standalone') {
-    search.standalone = 'true';
+  if (endpointType === URL_PARAMS.standalone) {
+    search.standalone = DashboardStandaloneMode.HIDE_NAV;
   }
   const url = uri.directory(directory).search(search).toString();
   if (!allowOverflow && url.length > MAX_URL_LENGTH) {
@@ -117,9 +122,9 @@ export function getChartDataUri({ path, qs, allowDomainSharding = false }) {
   // but can be specified with curUrl (used for unit tests to spoof
   // the window.location).
   let uri = new URI({
-    protocol: location.protocol.slice(0, -1),
+    protocol: window.location.protocol.slice(0, -1),
     hostname: getHostName(allowDomainSharding),
-    port: location.port ? location.port : '',
+    port: window.location.port ? window.location.port : '',
     path,
   });
   if (qs) {
@@ -169,8 +174,8 @@ export function getExploreUrl({
   if (endpointType === 'csv') {
     search.csv = 'true';
   }
-  if (endpointType === 'standalone') {
-    search.standalone = 'true';
+  if (endpointType === URL_PARAMS.standalone) {
+    search.standalone = '1';
   }
   if (endpointType === 'query') {
     search.query = 'true';
@@ -219,9 +224,8 @@ export const buildV1ChartDataPayload = ({
   });
 };
 
-export const getLegacyEndpointType = ({ resultType, resultFormat }) => {
-  return resultFormat === 'csv' ? resultFormat : resultType;
-};
+export const getLegacyEndpointType = ({ resultType, resultFormat }) =>
+  resultFormat === 'csv' ? resultFormat : resultType;
 
 export function postForm(url, payload, target = '_blank') {
   if (!url) {
@@ -283,4 +287,48 @@ export const exploreChart = formData => {
     allowDomainSharding: false,
   });
   postForm(url, formData);
+};
+
+export const useDebouncedEffect = (effect, delay, deps) => {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const callback = useCallback(effect, deps);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      callback();
+    }, delay);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [callback, delay]);
+};
+
+export const getSimpleSQLExpression = (subject, operator, comparator) => {
+  const isMulti = MULTI_OPERATORS.has(operator);
+  let expression = subject ?? '';
+  if (subject && operator) {
+    expression += ` ${operator}`;
+    const firstValue =
+      isMulti && Array.isArray(comparator) ? comparator[0] : comparator;
+    let comparatorArray;
+    if (comparator === undefined || comparator === null) {
+      comparatorArray = [];
+    } else if (Array.isArray(comparator)) {
+      comparatorArray = comparator;
+    } else {
+      comparatorArray = [comparator];
+    }
+    const isString =
+      firstValue !== undefined && Number.isNaN(Number(firstValue));
+    const quote = isString ? "'" : '';
+    const [prefix, suffix] = isMulti ? ['(', ')'] : ['', ''];
+    const formattedComparators = comparatorArray.map(
+      val => `${quote}${isString ? val.replace("'", "''") : val}${quote}`,
+    );
+    if (comparatorArray.length > 0) {
+      expression += ` ${prefix}${formattedComparators.join(', ')}${suffix}`;
+    }
+  }
+  return expression;
 };

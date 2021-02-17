@@ -16,125 +16,202 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React from 'react';
+import React, { CSSProperties } from 'react';
 import { kebabCase } from 'lodash';
-import {
-  Button as BootstrapButton,
-  Tooltip,
-  OverlayTrigger,
-  MenuItem,
-} from 'react-bootstrap';
-import styled from '@superset-ui/style';
+import { mix } from 'polished';
+import cx from 'classnames';
+import { Button as AntdButton } from 'src/common/components';
+import { useTheme } from '@superset-ui/core';
+import { Tooltip } from 'src/common/components/Tooltip';
 
-export type OnClickHandler = React.MouseEventHandler<BootstrapButton>;
-
-export interface DropdownItemProps {
-  label: string;
-  url: string;
-  icon?: string;
-}
+export type OnClickHandler = React.MouseEventHandler<HTMLElement>;
 
 export interface ButtonProps {
+  id?: string;
   className?: string;
   tooltip?: string;
-  placement?: string;
+  placement?:
+    | 'bottom'
+    | 'left'
+    | 'right'
+    | 'top'
+    | 'topLeft'
+    | 'topRight'
+    | 'bottomLeft'
+    | 'bottomRight'
+    | 'leftTop'
+    | 'leftBottom'
+    | 'rightTop'
+    | 'rightBottom';
   onClick?: OnClickHandler;
   disabled?: boolean;
-  bsStyle?: string;
-  btnStyles?: string;
-  bsSize?: BootstrapButton.ButtonProps['bsSize'];
-  style?: BootstrapButton.ButtonProps['style'];
+  buttonStyle?:
+    | 'primary'
+    | 'secondary'
+    | 'tertiary'
+    | 'success'
+    | 'warning'
+    | 'danger'
+    | 'default'
+    | 'link'
+    | 'dashed';
+  buttonSize?: 'default' | 'small' | 'xsmall';
+  style?: CSSProperties;
   children?: React.ReactNode;
-  dropdownItems?: DropdownItemProps[];
+  href?: string;
+  htmlType?: 'button' | 'submit' | 'reset';
+  cta?: boolean;
 }
 
-const BUTTON_WRAPPER_STYLE = { display: 'inline-block', cursor: 'not-allowed' };
-
-const SupersetButton = styled(BootstrapButton)`
-  &.supersetButton {
-    border-radius: ${({ theme }) => theme.borderRadius}px;
-    border: none;
-    color: ${({ theme }) => theme.colors.secondary.light5};
-    font-size: ${({ theme }) => theme.typography.sizes.s}px;
-    font-weight: ${({ theme }) => theme.typography.weights.bold};
-    min-width: ${({ theme }) => theme.gridUnit * 36}px;
-    min-height: ${({ theme }) => theme.gridUnit * 8}px;
-    text-transform: uppercase;
-    margin-left: ${({ theme }) => theme.gridUnit * 4}px;
-    &:first-of-type {
-      margin-left: 0;
-    }
-
-    i {
-      padding: 0 ${({ theme }) => theme.gridUnit * 2}px 0 0;
-    }
-
-    &.primary {
-      background-color: ${({ theme }) => theme.colors.primary.base};
-    }
-    &.secondary {
-      color: ${({ theme }) => theme.colors.primary.base};
-      background-color: ${({ theme }) => theme.colors.primary.light4};
-    }
-    &.danger {
-      background-color: ${({ theme }) => theme.colors.error.base};
-    }
-  }
-`;
-
 export default function Button(props: ButtonProps) {
-  const buttonProps = {
-    ...props,
-    bsSize: props.bsSize || 'sm',
-    placement: props.placement || 'top',
-  };
-  const tooltip = props.tooltip;
-  const placement = props.placement;
-  const dropdownItems = props.dropdownItems;
-  delete buttonProps.tooltip;
-  delete buttonProps.placement;
+  const {
+    tooltip,
+    placement,
+    disabled = false,
+    buttonSize,
+    buttonStyle,
+    className,
+    cta,
+    children,
+    href,
+    ...restProps
+  } = props;
 
-  if (tooltip && props.disabled) {
-    // Working around the fact that tooltips don't get triggered when buttons are disabled
-    // https://github.com/react-bootstrap/react-bootstrap/issues/1588
-    buttonProps.style = { pointerEvents: 'none' };
+  const theme = useTheme();
+  const { colors, transitionTiming, borderRadius, typography } = theme;
+  const { primary, grayscale, success, warning, error } = colors;
+
+  let height = 32;
+  let padding = 18;
+  if (buttonSize === 'xsmall') {
+    height = 22;
+    padding = 5;
+  } else if (buttonSize === 'small') {
+    height = 30;
+    padding = 10;
   }
 
-  let button = (
-    <SupersetButton {...buttonProps}>{props.children}</SupersetButton>
+  let backgroundColor = primary.light4;
+  let backgroundColorHover = mix(0.1, primary.base, primary.light4);
+  let backgroundColorActive = mix(0.25, primary.base, primary.light4);
+  let backgroundColorDisabled = grayscale.light2;
+  let color = primary.dark1;
+  let colorHover = color;
+  let borderWidth = 0;
+  let borderStyle = 'none';
+  let borderColor = 'transparent';
+  let borderColorHover = 'transparent';
+  let borderColorDisabled = 'transparent';
+
+  if (buttonStyle === 'primary') {
+    backgroundColor = primary.dark1;
+    backgroundColorHover = mix(0.1, grayscale.light5, primary.dark1);
+    backgroundColorActive = mix(0.2, grayscale.dark2, primary.dark1);
+    color = grayscale.light5;
+    colorHover = color;
+  } else if (buttonStyle === 'tertiary' || buttonStyle === 'dashed') {
+    backgroundColor = grayscale.light5;
+    backgroundColorHover = grayscale.light5;
+    backgroundColorActive = grayscale.light5;
+    backgroundColorDisabled = grayscale.light5;
+    borderWidth = 1;
+    borderStyle = buttonStyle === 'dashed' ? 'dashed' : 'solid';
+    borderColor = primary.dark1;
+    borderColorHover = primary.light1;
+    borderColorDisabled = grayscale.light2;
+  } else if (buttonStyle === 'danger') {
+    backgroundColor = error.base;
+    backgroundColorHover = mix(0.1, grayscale.light5, error.base);
+    backgroundColorActive = mix(0.2, grayscale.dark2, error.base);
+    color = grayscale.light5;
+    colorHover = color;
+  } else if (buttonStyle === 'warning') {
+    backgroundColor = warning.base;
+    backgroundColorHover = mix(0.1, grayscale.dark2, warning.base);
+    backgroundColorActive = mix(0.2, grayscale.dark2, warning.base);
+    color = grayscale.light5;
+    colorHover = color;
+  } else if (buttonStyle === 'success') {
+    backgroundColor = success.base;
+    backgroundColorHover = mix(0.1, grayscale.light5, success.base);
+    backgroundColorActive = mix(0.2, grayscale.dark2, success.base);
+    color = grayscale.light5;
+    colorHover = color;
+  } else if (buttonStyle === 'link') {
+    backgroundColor = 'transparent';
+    backgroundColorHover = 'transparent';
+    backgroundColorActive = 'transparent';
+    colorHover = primary.base;
+  }
+
+  const button = (
+    <AntdButton
+      href={disabled ? undefined : href}
+      disabled={disabled}
+      className={cx(className, { cta: !!cta })}
+      css={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        lineHeight: 1.5715,
+        fontSize: typography.sizes.s,
+        fontWeight: typography.weights.bold,
+        height,
+        textTransform: 'uppercase',
+        padding: `0px ${padding}px`,
+        transition: `all ${transitionTiming}s`,
+        minWidth: cta ? theme.gridUnit * 36 : undefined,
+        minHeight: cta ? theme.gridUnit * 8 : undefined,
+        boxShadow: 'none',
+        borderWidth,
+        borderStyle,
+        borderColor,
+        borderRadius,
+        color,
+        backgroundColor,
+        '&:hover': {
+          color: colorHover,
+          backgroundColor: backgroundColorHover,
+          borderColor: borderColorHover,
+        },
+        '&:active': {
+          color,
+          backgroundColor: backgroundColorActive,
+        },
+        '&:focus': {
+          color,
+          backgroundColor,
+          borderColor,
+        },
+        '&[disabled], &[disabled]:hover': {
+          color: grayscale.base,
+          backgroundColor: backgroundColorDisabled,
+          borderColor: borderColorDisabled,
+        },
+        'i:first-of-type, svg:first-of-type': {
+          marginRight: theme.gridUnit * 2,
+          padding: `0 ${theme.gridUnit * 2} 0 0`,
+        },
+        marginLeft: theme.gridUnit * 2,
+        '&:first-of-type': {
+          marginLeft: 0,
+        },
+      }}
+      {...restProps}
+    >
+      {children}
+    </AntdButton>
   );
-
-  const whittledProps = { ...buttonProps };
-  delete whittledProps.dropdownItems;
-
-  if (dropdownItems) {
-    button = (
-      <div style={BUTTON_WRAPPER_STYLE}>
-        <SupersetButton {...whittledProps} data-toggle="dropdown">
-          {props.children}
-        </SupersetButton>
-        <ul className="dropdown-menu">
-          {dropdownItems.map((dropdownItem: DropdownItemProps) => (
-            <MenuItem key={`${dropdownItem.label}`} href={dropdownItem.url}>
-              <i className={`fa ${dropdownItem.icon}`} />
-              &nbsp; {dropdownItem.label}
-            </MenuItem>
-          ))}
-        </ul>
-      </div>
-    );
-  }
 
   if (tooltip) {
     return (
-      <OverlayTrigger
+      <Tooltip
         placement={placement}
-        overlay={
-          <Tooltip id={`${kebabCase(tooltip)}-tooltip`}>{tooltip}</Tooltip>
-        }
+        id={`${kebabCase(tooltip)}-tooltip`}
+        title={tooltip}
       >
         {button}
-      </OverlayTrigger>
+      </Tooltip>
     );
   }
 

@@ -24,10 +24,17 @@ import simplejson as json
 from flask_babel import gettext as _
 from pandas import DataFrame
 
-from superset import app, is_feature_enabled
+from superset import app
 from superset.exceptions import QueryObjectValidationError
 from superset.typing import Metric
-from superset.utils import core as utils, pandas_postprocessing
+from superset.utils import pandas_postprocessing
+from superset.utils.core import (
+    DTTM_ALIAS,
+    find_duplicates,
+    get_metric_names,
+    json_int_dttm_ser,
+)
+from superset.utils.date_parser import get_since_until, parse_human_timedelta
 from superset.views.utils import get_time_range_endpoints
 
 config = app.config
@@ -50,6 +57,7 @@ DEPRECATED_EXTRAS_FIELDS = (
     DeprecatedField(old_name="where", new_name="where"),
     DeprecatedField(old_name="having", new_name="having"),
     DeprecatedField(old_name="having_filters", new_name="having_druid"),
+    DeprecatedField(old_name="druid_time_origin", new_name="druid_time_origin"),
 )
 
 
@@ -59,6 +67,8 @@ class QueryObject:
     and druid. The query objects are constructed on the client.
     """
 
+    annotation_layers: List[Dict[str, Any]]
+    applied_time_extras: Dict[str, str]
     granularity: Optional[str]
     from_dttm: Optional[datetime]
     to_dttm: Optional[datetime]
@@ -79,13 +89,15 @@ class QueryObject:
 
     def __init__(
         self,
+        annotation_layers: Optional[List[Dict[str, Any]]] = None,
+        applied_time_extras: Optional[Dict[str, str]] = None,
         granularity: Optional[str] = None,
         metrics: Optional[List[Union[Dict[str, Any], str]]] = None,
         groupby: Optional[List[str]] = None,
         filters: Optional[List[Dict[str, Any]]] = None,
         time_range: Optional[str] = None,
         time_shift: Optional[str] = None,
-        is_timeseries: bool = False,
+        is_timeseries: Optional[bool] = None,
         timeseries_limit: int = 0,
         row_limit: Optional[int] = None,
         row_offset: Optional[int] = None,
@@ -97,11 +109,20 @@ class QueryObject:
         post_processing: Optional[List[Optional[Dict[str, Any]]]] = None,
         **kwargs: Any,
     ):
+        annotation_layers = annotation_layers or []
         metrics = metrics or []
+        columns = columns or []
+        groupby = groupby or []
         extras = extras or {}
-        is_sip_38 = is_feature_enabled("SIP_38_VIZ_REARCHITECTURE")
+        self.annotation_layers = [
+            layer
+            for layer in annotation_layers
+            # formula annotations don't affect the payload, hence can be dropped
+            if layer["annotationType"] != "FORMULA"
+        ]
+        self.applied_time_extras = applied_time_extras or {}
         self.granularity = granularity
-        self.from_dttm, self.to_dttm = utils.get_since_until(
+        self.from_dttm, self.to_dttm = get_since_until(
             relative_start=extras.get(
                 "relative_start", config["DEFAULT_RELATIVE_START_TIME"]
             ),
@@ -111,20 +132,27 @@ class QueryObject:
             time_range=time_range,
             time_shift=time_shift,
         )
-        self.is_timeseries = is_timeseries
+        # is_timeseries is True if time column is in either columns or groupby
+        # (both are dimensions)
+        self.is_timeseries = (
+            is_timeseries
+            if is_timeseries is not None
+            else DTTM_ALIAS in columns + groupby
+        )
         self.time_range = time_range
-        self.time_shift = utils.parse_human_timedelta(time_shift)
+        self.time_shift = parse_human_timedelta(time_shift)
         self.post_processing = [
             post_proc for post_proc in post_processing or [] if post_proc
         ]
-        if not is_sip_38:
-            self.groupby = groupby or []
 
-        # Temporary solution for backward compatibility issue due the new format of
-        # non-ad-hoc metric which needs to adhere to superset-ui per
-        # https://git.io/Jvm7P.
+        # Support metric reference/definition in the format of
+        #   1. 'metric_name'   - name of predefined metric
+        #   2. { label: 'label_name' }  - legacy format for a predefined metric
+        #   3. { expressionType: 'SIMPLE' | 'SQL', ... } - adhoc metric
         self.metrics = [
-            metric if "expressionType" in metric else metric["label"]  # type: ignore
+            metric
+            if isinstance(metric, str) or "expressionType" in metric
+            else metric["label"]  # type: ignore
             for metric in metrics
         ]
 
@@ -139,14 +167,8 @@ class QueryObject:
         if config["SIP_15_ENABLED"] and "time_range_endpoints" not in self.extras:
             self.extras["time_range_endpoints"] = get_time_range_endpoints(form_data={})
 
-        self.columns = columns or []
-        if is_sip_38 and groupby:
-            self.columns += groupby
-            logger.warning(
-                "The field `groupby` is deprecated. Viz plugins should "
-                "pass all selectables via the `columns` field"
-            )
-
+        self.columns = columns
+        self.groupby = groupby or []
         self.orderby = orderby or []
 
         # rename deprecated fields
@@ -189,9 +211,40 @@ class QueryObject:
                         )
                     self.extras[field.new_name] = value
 
+    @property
+    def metric_names(self) -> List[str]:
+        """Return metrics names (labels), coerce adhoc metrics to strings."""
+        return get_metric_names(self.metrics)
+
+    @property
+    def column_names(self) -> List[str]:
+        """Return column names (labels). Reserved for future adhoc calculated
+        columns."""
+        return self.columns
+
+    def validate(
+        self, raise_exceptions: Optional[bool] = True
+    ) -> Optional[QueryObjectValidationError]:
+        """Validate query object"""
+        error: Optional[QueryObjectValidationError] = None
+        all_labels = self.metric_names + self.column_names
+        if len(set(all_labels)) < len(all_labels):
+            dup_labels = find_duplicates(all_labels)
+            error = QueryObjectValidationError(
+                _(
+                    "Duplicate column/metric labels: %(labels)s. Please make "
+                    "sure all columns and metrics have a unique label.",
+                    labels=", ".join(f'"{x}"' for x in dup_labels),
+                )
+            )
+        if error and raise_exceptions:
+            raise error
+        return error
+
     def to_dict(self) -> Dict[str, Any]:
         query_object_dict = {
             "granularity": self.granularity,
+            "groupby": self.groupby,
             "from_dttm": self.from_dttm,
             "to_dttm": self.to_dttm,
             "is_timeseries": self.is_timeseries,
@@ -206,9 +259,6 @@ class QueryObject:
             "columns": self.columns,
             "orderby": self.orderby,
         }
-        if not is_feature_enabled("SIP_38_VIZ_REARCHITECTURE"):
-            query_object_dict["groupby"] = self.groupby
-
         return query_object_dict
 
     def cache_key(self, **extra: Any) -> str:
@@ -228,12 +278,33 @@ class QueryObject:
             cache_dict["time_range"] = self.time_range
         if self.post_processing:
             cache_dict["post_processing"] = self.post_processing
+
+        annotation_fields = [
+            "annotationType",
+            "descriptionColumns",
+            "intervalEndColumn",
+            "name",
+            "overrides",
+            "sourceType",
+            "timeColumn",
+            "titleColumn",
+            "value",
+        ]
+        annotation_layers = [
+            {field: layer[field] for field in annotation_fields if field in layer}
+            for layer in self.annotation_layers
+        ]
+        # only add to key if there are annotations present that affect the payload
+        if annotation_layers:
+            cache_dict["annotation_layers"] = annotation_layers
+
         json_data = self.json_dumps(cache_dict, sort_keys=True)
         return hashlib.md5(json_data.encode("utf-8")).hexdigest()
 
-    def json_dumps(self, obj: Any, sort_keys: bool = False) -> str:
+    @staticmethod
+    def json_dumps(obj: Any, sort_keys: bool = False) -> str:
         return json.dumps(
-            obj, default=utils.json_int_dttm_ser, ignore_nan=True, sort_keys=sort_keys
+            obj, default=json_int_dttm_ser, ignore_nan=True, sort_keys=sort_keys
         )
 
     def exec_post_processing(self, df: DataFrame) -> DataFrame:
@@ -243,7 +314,8 @@ class QueryObject:
         :param df: DataFrame returned from database model.
         :return: new DataFrame to which all post processing operations have been
                  applied
-        :raises ChartDataValidationError: If the post processing operation in incorrect
+        :raises QueryObjectValidationError: If the post processing operation
+                 is incorrect
         """
         for post_process in self.post_processing:
             operation = post_process.get("operation")

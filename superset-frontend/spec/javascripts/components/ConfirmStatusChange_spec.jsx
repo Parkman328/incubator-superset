@@ -18,10 +18,11 @@
  */
 import React from 'react';
 import { mount } from 'enzyme';
-import { Button } from 'react-bootstrap';
-import { supersetTheme, ThemeProvider } from '@superset-ui/style';
+import Button from 'src/components/Button';
+import { act } from 'react-dom/test-utils';
+import { supersetTheme, ThemeProvider } from '@superset-ui/core';
 import ConfirmStatusChange from 'src/components/ConfirmStatusChange';
-import Modal from 'src/components/Modal';
+import Modal from 'src/common/components/Modal';
 
 describe('ConfirmStatusChange', () => {
   const mockedProps = {
@@ -33,7 +34,7 @@ describe('ConfirmStatusChange', () => {
     <ConfirmStatusChange {...mockedProps}>
       {confirm => (
         <>
-          <button id="btn1" onClick={confirm} />
+          <Button id="btn1" onClick={confirm} />
         </>
       )}
     </ConfirmStatusChange>,
@@ -44,7 +45,9 @@ describe('ConfirmStatusChange', () => {
   );
 
   it('opens a confirm modal', () => {
-    wrapper.find('#btn1').props().onClick('foo');
+    act(() => {
+      wrapper.find('#btn1').first().props().onClick('foo');
+    });
 
     wrapper.update();
 
@@ -52,7 +55,9 @@ describe('ConfirmStatusChange', () => {
   });
 
   it('calls the function on confirm', () => {
-    wrapper.find(Button).last().props().onClick();
+    act(() => {
+      wrapper.find(Button).last().props().onClick();
+    });
 
     expect(mockedProps.onConfirm).toHaveBeenCalledWith('foo');
   });

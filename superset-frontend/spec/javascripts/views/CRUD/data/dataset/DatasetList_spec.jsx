@@ -20,6 +20,7 @@ import React from 'react';
 import thunk from 'redux-thunk';
 import configureStore from 'redux-mock-store';
 import fetchMock from 'fetch-mock';
+import { Provider } from 'react-redux';
 import { styledMount as mount } from 'spec/helpers/theming';
 
 import DatasetList from 'src/views/CRUD/data/dataset/DatasetList';
@@ -35,6 +36,7 @@ const store = mockStore({});
 
 const datasetsInfoEndpoint = 'glob:*/api/v1/dataset/_info*';
 const datasetsOwnersEndpoint = 'glob:*/api/v1/dataset/related/owners*';
+const datasetsSchemaEndpoint = 'glob:*/api/v1/dataset/distinct/schema*';
 const databaseEndpoint = 'glob:*/api/v1/dataset/related/database*';
 const datasetsEndpoint = 'glob:*/api/v1/dataset/?*';
 
@@ -51,10 +53,17 @@ const mockdatasets = [...new Array(3)].map((_, i) => ({
   table_name: `coolest table ${i}`,
 }));
 
+const mockUser = {
+  userId: 1,
+};
+
 fetchMock.get(datasetsInfoEndpoint, {
-  permissions: ['can_list', 'can_edit', 'can_add', 'can_delete'],
+  permissions: ['can_read', 'can_write'],
 });
 fetchMock.get(datasetsOwnersEndpoint, {
+  result: [],
+});
+fetchMock.get(datasetsSchemaEndpoint, {
   result: [],
 });
 fetchMock.get(datasetsEndpoint, {
@@ -66,9 +75,11 @@ fetchMock.get(databaseEndpoint, {
 });
 
 async function mountAndWait(props) {
-  const mounted = mount(<DatasetList {...props} />, {
-    context: { store },
-  });
+  const mounted = mount(
+    <Provider store={store}>
+      <DatasetList {...props} user={mockUser} />
+    </Provider>,
+  );
   await waitForComponentToPaint(mounted);
 
   return mounted;
@@ -97,10 +108,18 @@ describe('DatasetList', () => {
 
   it('fetches data', () => {
     const callsD = fetchMock.calls(/dataset\/\?q/);
-    expect(callsD).toHaveLength(2);
-    expect(callsD[1][0]).toMatchInlineSnapshot(
+    expect(callsD).toHaveLength(1);
+    expect(callsD[0][0]).toMatchInlineSnapshot(
       `"http://localhost/api/v1/dataset/?q=(order_column:changed_on_delta_humanized,order_direction:desc,page:0,page_size:25)"`,
     );
+  });
+
+  it('fetches owner filter values', () => {
+    expect(fetchMock.calls(/dataset\/related\/owners/)).toHaveLength(1);
+  });
+
+  it('fetches schema filter values', () => {
+    expect(fetchMock.calls(/dataset\/distinct\/schema/)).toHaveLength(1);
   });
 
   it('shows/hides bulk actions when bulk actions is clicked', async () => {

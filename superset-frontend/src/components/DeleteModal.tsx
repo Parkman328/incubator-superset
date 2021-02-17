@@ -16,11 +16,10 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { t } from '@superset-ui/translation';
+import { t, styled } from '@superset-ui/core';
 import React, { useState } from 'react';
-import styled from '@superset-ui/style';
-import { FormGroup, FormControl } from 'react-bootstrap';
-import Modal from 'src/components/Modal';
+import { FormGroup, FormControl, FormControlProps } from 'react-bootstrap';
+import Modal from 'src/common/components/Modal';
 import FormLabel from 'src/components/FormLabel';
 
 const StyleFormGroup = styled(FormGroup)`
@@ -66,15 +65,21 @@ export default function DeleteModal({
     >
       <DescriptionContainer>{description}</DescriptionContainer>
       <StyleFormGroup>
-        <FormLabel htmlFor="delete">{t('type "delete" to confirm')}</FormLabel>
+        <FormLabel htmlFor="delete">
+          {t('Type "%s" to confirm', t('DELETE'))}
+        </FormLabel>
         <FormControl
+          data-test="delete-modal-input"
           id="delete"
           type="text"
           bsSize="sm"
-          // @ts-ignore
-          onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-            setDisableChange(event.target.value.toUpperCase() !== 'DELETE')
-          }
+          autoComplete="off"
+          onChange={(
+            event: React.FormEvent<FormControl & FormControlProps>,
+          ) => {
+            const targetValue = (event.currentTarget?.value as string) ?? '';
+            setDisableChange(targetValue.toUpperCase() !== t('DELETE'));
+          }}
         />
       </StyleFormGroup>
     </Modal>

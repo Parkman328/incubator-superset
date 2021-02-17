@@ -26,6 +26,7 @@ from superset.utils import core as utils
 
 get_delete_ids_schema = {"type": "array", "items": {"type": "integer"}}
 get_export_ids_schema = {"type": "array", "items": {"type": "integer"}}
+get_fav_star_ids_schema = {"type": "array", "items": {"type": "integer"}}
 thumbnail_query_schema = {
     "type": "object",
     "properties": {"force": {"type": "boolean"}},
@@ -36,6 +37,12 @@ slug_description = "Unique identifying part for the web address of the dashboard
 owners_description = (
     "Owner are users ids allowed to delete or change this dashboard. "
     "If left empty you will be one of the owners of the dashboard."
+)
+roles_description = (
+    "Roles is a list which defines access to the dashboard. "
+    "These roles are always applied in addition to restrictions on dataset "
+    "level access. "
+    "If no roles defined then the dashboard is available to all roles."
 )
 position_json_description = (
     "This json object describes the positioning of the widgets "
@@ -97,10 +104,14 @@ def validate_json_metadata(value: Union[bytes, bytearray, str]) -> None:
 
 
 class DashboardJSONMetadataSchema(Schema):
+    # filter_configuration is for dashboard-native filters
+    filter_configuration = fields.List(fields.Dict(), allow_none=True)
     timed_refresh_immune_slices = fields.List(fields.Integer())
+    # deprecated wrt dashboard-native filters
     filter_scopes = fields.Dict()
     expanded_slices = fields.Dict()
     refresh_frequency = fields.Integer()
+    # deprecated wrt dashboard-native filters
     default_filters = fields.Str()
     stagger_refresh = fields.Boolean()
     stagger_time = fields.Integer()
@@ -131,6 +142,7 @@ class DashboardPostSchema(BaseDashboardSchema):
         description=slug_description, allow_none=True, validate=[Length(1, 255)]
     )
     owners = fields.List(fields.Integer(description=owners_description))
+    roles = fields.List(fields.Integer(description=roles_description))
     position_json = fields.String(
         description=position_json_description, validate=validate_json
     )
@@ -153,6 +165,7 @@ class DashboardPutSchema(BaseDashboardSchema):
     owners = fields.List(
         fields.Integer(description=owners_description, allow_none=True)
     )
+    roles = fields.List(fields.Integer(description=roles_description, allow_none=True))
     position_json = fields.String(
         description=position_json_description, allow_none=True, validate=validate_json
     )
@@ -163,3 +176,26 @@ class DashboardPutSchema(BaseDashboardSchema):
         validate=validate_json_metadata,
     )
     published = fields.Boolean(description=published_description, allow_none=True)
+
+
+class ChartFavStarResponseResult(Schema):
+    id = fields.Integer(description="The Chart id")
+    value = fields.Boolean(description="The FaveStar value")
+
+
+class GetFavStarIdsSchema(Schema):
+    result = fields.List(
+        fields.Nested(ChartFavStarResponseResult),
+        description="A list of results for each corresponding chart in the request",
+    )
+
+
+class ImportV1DashboardSchema(Schema):
+    dashboard_title = fields.String(required=True)
+    description = fields.String(allow_none=True)
+    css = fields.String(allow_none=True)
+    slug = fields.String(allow_none=True)
+    uuid = fields.UUID(required=True)
+    position = fields.Dict()
+    metadata = fields.Dict()
+    version = fields.String(required=True)

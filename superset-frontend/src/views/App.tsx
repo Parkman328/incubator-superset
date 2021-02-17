@@ -16,29 +16,27 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React from 'react';
+import React, { Suspense } from 'react';
 import { hot } from 'react-hot-loader/root';
 import thunk from 'redux-thunk';
 import { createStore, applyMiddleware, compose, combineReducers } from 'redux';
-import { Provider } from 'react-redux';
+import { Provider as ReduxProvider } from 'react-redux';
 import { BrowserRouter as Router, Switch, Route } from 'react-router-dom';
 import { QueryParamProvider } from 'use-query-params';
 import { initFeatureFlags } from 'src/featureFlags';
-import { supersetTheme, ThemeProvider } from '@superset-ui/style';
+import { ThemeProvider } from '@superset-ui/core';
+import { DynamicPluginProvider } from 'src/components/DynamicPlugins';
 import ErrorBoundary from 'src/components/ErrorBoundary';
+import Loading from 'src/components/Loading';
 import Menu from 'src/components/Menu/Menu';
 import FlashProvider from 'src/components/FlashProvider';
-import DashboardList from 'src/views/CRUD/dashboard/DashboardList';
-import ChartList from 'src/views/CRUD/chart/ChartList';
-import DatasetList from 'src/views/CRUD/data/dataset/DatasetList';
-import DatasourceList from 'src/views/CRUD/data/database/DatabaseList';
-
+import { theme } from 'src/preamble';
+import ToastPresenter from 'src/messageToasts/containers/ToastPresenter';
+import setupPlugins from 'src/setup/setupPlugins';
+import setupApp from 'src/setup/setupApp';
 import messageToastReducer from 'src/messageToasts/reducers';
 import { initEnhancer } from 'src/reduxUtils';
-import setupApp from 'src/setup/setupApp';
-import setupPlugins from 'src/setup/setupPlugins';
-import Welcome from 'src/views/CRUD/welcome/Welcome';
-import ToastPresenter from 'src/messageToasts/containers/ToastPresenter';
+import { routes, isFrontendRoute } from 'src/views/routes';
 
 setupApp();
 setupPlugins();
@@ -59,45 +57,36 @@ const store = createStore(
 );
 
 const App = () => (
-  <Provider store={store}>
-    <ThemeProvider theme={supersetTheme}>
+  <ReduxProvider store={store}>
+    <ThemeProvider theme={theme}>
       <FlashProvider common={common}>
         <Router>
-          <QueryParamProvider ReactRouterRoute={Route}>
-            <Menu data={menu} />
-            <Switch>
-              <Route path="/superset/welcome/">
-                <ErrorBoundary>
-                  <Welcome user={user} />
-                </ErrorBoundary>
-              </Route>
-              <Route path="/dashboard/list/">
-                <ErrorBoundary>
-                  <DashboardList user={user} />
-                </ErrorBoundary>
-              </Route>
-              <Route path="/chart/list/">
-                <ErrorBoundary>
-                  <ChartList user={user} />
-                </ErrorBoundary>
-              </Route>
-              <Route path="/tablemodelview/list/">
-                <ErrorBoundary>
-                  <DatasetList user={user} />
-                </ErrorBoundary>
-              </Route>
-              <Route path="/databaseview/list/">
-                <ErrorBoundary>
-                  <DatasourceList user={user} />
-                </ErrorBoundary>
-              </Route>
-            </Switch>
-            <ToastPresenter />
-          </QueryParamProvider>
+          <DynamicPluginProvider>
+            <QueryParamProvider
+              ReactRouterRoute={Route}
+              stringifyOptions={{ encode: false }}
+            >
+              <Menu data={menu} isFrontendRoute={isFrontendRoute} />
+              <Switch>
+                {routes.map(
+                  ({ path, Component, props = {}, Fallback = Loading }) => (
+                    <Route path={path} key={path}>
+                      <Suspense fallback={<Fallback />}>
+                        <ErrorBoundary>
+                          <Component user={user} {...props} />
+                        </ErrorBoundary>
+                      </Suspense>
+                    </Route>
+                  ),
+                )}
+              </Switch>
+              <ToastPresenter />
+            </QueryParamProvider>
+          </DynamicPluginProvider>
         </Router>
       </FlashProvider>
     </ThemeProvider>
-  </Provider>
+  </ReduxProvider>
 );
 
 export default hot(App);

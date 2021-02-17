@@ -16,51 +16,56 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { SupersetClient } from '@superset-ui/connection';
-import { t } from '@superset-ui/translation';
-import PropTypes from 'prop-types';
-import React from 'react';
+import { SupersetClient, t } from '@superset-ui/core';
+import React, { useState, useMemo } from 'react';
 import rison from 'rison';
+import { isFeatureEnabled, FeatureFlag } from 'src/featureFlags';
 import {
   createFetchRelated,
   createErrorHandler,
-  createFaveStarHandlers,
+  handleDashboardDelete,
+  handleBulkDashboardExport,
 } from 'src/views/CRUD/utils';
+import { useListViewResource, useFavoriteStatus } from 'src/views/CRUD/hooks';
 import ConfirmStatusChange from 'src/components/ConfirmStatusChange';
-import SubMenu from 'src/components/Menu/SubMenu';
-import AvatarIcon from 'src/components/AvatarIcon';
+import SubMenu, { SubMenuProps } from 'src/components/Menu/SubMenu';
 import ListView, {
   ListViewProps,
-  FetchDataConfig,
   Filters,
+  FilterOperators,
 } from 'src/components/ListView';
-import ExpandableList from 'src/components/ExpandableList';
 import Owner from 'src/types/Owner';
 import withToasts from 'src/messageToasts/enhancers/withToasts';
+import FacePile from 'src/components/FacePile';
 import Icon from 'src/components/Icon';
-import Label from 'src/components/Label';
 import FaveStar from 'src/components/FaveStar';
 import PropertiesModal from 'src/dashboard/components/PropertiesModal';
-import ListViewCard from 'src/components/ListViewCard';
-import { Dropdown, Menu } from 'src/common/components';
+import TooltipWrapper from 'src/components/TooltipWrapper';
+import ImportModelsModal from 'src/components/ImportModal/index';
+
+import Dashboard from 'src/dashboard/containers/Dashboard';
+import DashboardCard from './DashboardCard';
 
 const PAGE_SIZE = 25;
-const FAVESTAR_BASE_URL = '/superset/favstar/Dashboard';
+const PASSWORDS_NEEDED_MESSAGE = t(
+  'The passwords for the databases below are needed in order to ' +
+    'import them together with the dashboards. Please note that the ' +
+    '"Secure Extra" and "Certificate" sections of ' +
+    'the database configuration are not present in export files, and ' +
+    'should be added manually after the import if they are needed.',
+);
+const CONFIRM_OVERWRITE_MESSAGE = t(
+  'You are importing one or more dashboards that already exist. ' +
+    'Overwriting might cause you to lose some of your work. Are you ' +
+    'sure you want to overwrite?',
+);
 
-interface Props {
+interface DashboardListProps {
   addDangerToast: (msg: string) => void;
   addSuccessToast: (msg: string) => void;
-}
-
-interface State {
-  bulkSelectEnabled: boolean;
-  dashboardCount: number;
-  dashboards: Dashboard[];
-  favoriteStatus: object;
-  dashboardToEdit: Dashboard | null;
-  lastFetchDataConfig: FetchDataConfig | null;
-  loading: boolean;
-  permissions: string[];
+  user: {
+    userId: string | number;
+  };
 }
 
 interface Dashboard {
@@ -74,575 +79,502 @@ interface Dashboard {
   url: string;
   thumbnail_url: string;
   owners: Owner[];
+  created_by: object;
 }
 
-class DashboardList extends React.PureComponent<Props, State> {
-  static propTypes = {
-    addDangerToast: PropTypes.func.isRequired,
-  };
+function DashboardList(props: DashboardListProps) {
+  const { addDangerToast, addSuccessToast } = props;
 
-  state: State = {
-    bulkSelectEnabled: false,
-    dashboardCount: 0,
-    dashboards: [],
-    favoriteStatus: {}, // Hash mapping dashboard id to 'isStarred' status
-    dashboardToEdit: null,
-    lastFetchDataConfig: null,
-    loading: true,
-    permissions: [],
-  };
-
-  componentDidMount() {
-    SupersetClient.get({
-      endpoint: `/api/v1/dashboard/_info`,
-    }).then(
-      ({ json: infoJson = {} }) => {
-        this.setState({
-          permissions: infoJson.permissions,
-        });
-      },
-      createErrorHandler(errMsg =>
-        this.props.addDangerToast(
-          t('An error occurred while fetching Dashboards: %s, %s', errMsg),
-        ),
-      ),
-    );
-  }
-
-  get canEdit() {
-    return this.hasPerm('can_edit');
-  }
-
-  get canDelete() {
-    return this.hasPerm('can_delete');
-  }
-
-  get canExport() {
-    return this.hasPerm('can_mulexport');
-  }
-
-  initialSort = [{ id: 'changed_on_delta_humanized', desc: true }];
-
-  fetchMethods = createFaveStarHandlers(
-    FAVESTAR_BASE_URL,
-    this,
-    (message: string) => {
-      this.props.addDangerToast(message);
+  const {
+    state: {
+      loading,
+      resourceCount: dashboardCount,
+      resourceCollection: dashboards,
+      bulkSelectEnabled,
     },
+    setResourceCollection: setDashboards,
+    hasPerm,
+    fetchData,
+    toggleBulkSelect,
+    refreshData,
+  } = useListViewResource<Dashboard>(
+    'dashboard',
+    t('dashboard'),
+    addDangerToast,
+  );
+  const dashboardIds = useMemo(() => dashboards.map(d => d.id), [dashboards]);
+  const [saveFavoriteStatus, favoriteStatus] = useFavoriteStatus(
+    'dashboard',
+    dashboardIds,
+    addDangerToast,
   );
 
-  columns = [
-    {
-      Cell: ({ row: { original } }: any) => {
-        return (
-          <FaveStar
-            itemId={original.id}
-            fetchFaveStar={this.fetchMethods.fetchFaveStar}
-            saveFaveStar={this.fetchMethods.saveFaveStar}
-            isStarred={!!this.state.favoriteStatus[original.id]}
-            height={20}
-          />
-        );
-      },
-      Header: '',
-      id: 'favorite',
-      disableSortBy: true,
-    },
-    {
-      Cell: ({
-        row: {
-          original: { url, dashboard_title: dashboardTitle },
-        },
-      }: any) => <a href={url}>{dashboardTitle}</a>,
-      Header: t('Title'),
-      accessor: 'dashboard_title',
-    },
-    {
-      Cell: ({
-        row: {
-          original: { owners },
-        },
-      }: any) => (
-        <ExpandableList
-          items={owners.map(
-            ({ first_name: firstName, last_name: lastName }: any) =>
-              `${firstName} ${lastName}`,
-          )}
-          display={2}
-        />
-      ),
-      Header: t('Owners'),
-      accessor: 'owners',
-      disableSortBy: true,
-    },
-    {
-      Cell: ({
-        row: {
-          original: {
-            changed_by_name: changedByName,
-            changed_by_url: changedByUrl,
-          },
-        },
-      }: any) => <a href={changedByUrl}>{changedByName}</a>,
-      Header: t('Modified By'),
-      accessor: 'changed_by.first_name',
-    },
-    {
-      Cell: ({
-        row: {
-          original: { published },
-        },
-      }: any) => (
-        <span className="no-wrap">
-          {published ? <Icon name="check" /> : ''}
-        </span>
-      ),
-      Header: t('Published'),
-      accessor: 'published',
-    },
-    {
-      Cell: ({
-        row: {
-          original: { changed_on_delta_humanized: changedOn },
-        },
-      }: any) => <span className="no-wrap">{changedOn}</span>,
-      Header: t('Modified'),
-      accessor: 'changed_on_delta_humanized',
-    },
-    {
-      accessor: 'slug',
-      hidden: true,
-      disableSortBy: true,
-    },
-    {
-      Cell: ({ row: { original } }: any) => this.renderActions(original),
-      Header: t('Actions'),
-      id: 'actions',
-      disableSortBy: true,
-    },
-  ];
+  const [dashboardToEdit, setDashboardToEdit] = useState<Dashboard | null>(
+    null,
+  );
 
-  toggleBulkSelect = () => {
-    this.setState({ bulkSelectEnabled: !this.state.bulkSelectEnabled });
+  const [importingDashboard, showImportModal] = useState<boolean>(false);
+  const [passwordFields, setPasswordFields] = useState<string[]>([]);
+
+  const openDashboardImportModal = () => {
+    showImportModal(true);
   };
 
-  filters: Filters = [
-    {
-      Header: 'Owner',
-      id: 'owners',
-      input: 'select',
-      operator: 'rel_m_m',
-      unfilteredLabel: 'All',
-      fetchSelects: createFetchRelated(
-        'dashboard',
-        'owners',
-        createErrorHandler(errMsg =>
-          this.props.addDangerToast(
-            t(
-              'An error occurred while fetching chart owner values: %s',
-              errMsg,
-            ),
-          ),
-        ),
-      ),
-      paginate: true,
-    },
-    {
-      Header: 'Published',
-      id: 'published',
-      input: 'select',
-      operator: 'eq',
-      unfilteredLabel: 'Any',
-      selects: [
-        { label: 'Published', value: true },
-        { label: 'Unpublished', value: false },
-      ],
-    },
-    {
-      Header: 'Search',
-      id: 'dashboard_title',
-      input: 'search',
-      operator: 'title_or_slug',
-    },
-  ];
-
-  sortTypes = [
-    {
-      desc: false,
-      id: 'dashboard_title',
-      label: 'Alphabetical',
-      value: 'alphabetical',
-    },
-    {
-      desc: true,
-      id: 'changed_on_delta_humanized',
-      label: 'Recently Modified',
-      value: 'recently_modified',
-    },
-    {
-      desc: false,
-      id: 'changed_on_delta_humanized',
-      label: 'Least Recently Modified',
-      value: 'least_recently_modified',
-    },
-  ];
-
-  hasPerm = (perm: string) => {
-    if (!this.state.permissions.length) {
-      return false;
-    }
-
-    return Boolean(this.state.permissions.find(p => p === perm));
+  const closeDashboardImportModal = () => {
+    showImportModal(false);
   };
 
-  openDashboardEditModal = (dashboard: Dashboard) => {
-    this.setState({
-      dashboardToEdit: dashboard,
-    });
+  const handleDashboardImport = () => {
+    showImportModal(false);
+    refreshData();
   };
 
-  handleDashboardEdit = (edits: any) => {
-    this.setState({ loading: true });
+  const canCreate = hasPerm('can_write');
+  const canEdit = hasPerm('can_write');
+  const canDelete = hasPerm('can_write');
+  const canExport = hasPerm('can_read');
+
+  const initialSort = [{ id: 'changed_on_delta_humanized', desc: true }];
+
+  function openDashboardEditModal(dashboard: Dashboard) {
+    setDashboardToEdit(dashboard);
+  }
+
+  function handleDashboardEdit(edits: Dashboard) {
     return SupersetClient.get({
       endpoint: `/api/v1/dashboard/${edits.id}`,
     }).then(
       ({ json = {} }) => {
-        this.setState({
-          dashboards: this.state.dashboards.map(dashboard => {
+        setDashboards(
+          dashboards.map(dashboard => {
             if (dashboard.id === json.id) {
               return json.result;
             }
             return dashboard;
           }),
-          loading: false,
-        });
+        );
       },
       createErrorHandler(errMsg =>
-        this.props.addDangerToast(
+        addDangerToast(
           t('An error occurred while fetching dashboards: %s', errMsg),
         ),
       ),
     );
-  };
+  }
 
-  handleDashboardDelete = ({
-    id,
-    dashboard_title: dashboardTitle,
-  }: Dashboard) =>
-    SupersetClient.delete({
-      endpoint: `/api/v1/dashboard/${id}`,
-    }).then(
-      () => {
-        const { lastFetchDataConfig } = this.state;
-        if (lastFetchDataConfig) {
-          this.fetchData(lastFetchDataConfig);
-        }
-        this.props.addSuccessToast(t('Deleted: %s', dashboardTitle));
-      },
-      createErrorHandler(errMsg =>
-        this.props.addDangerToast(
-          t('There was an issue deleting %s: %s', dashboardTitle, errMsg),
-        ),
-      ),
-    );
-
-  handleBulkDashboardDelete = (dashboards: Dashboard[]) => {
-    SupersetClient.delete({
+  function handleBulkDashboardDelete(dashboardsToDelete: Dashboard[]) {
+    return SupersetClient.delete({
       endpoint: `/api/v1/dashboard/?q=${rison.encode(
-        dashboards.map(({ id }) => id),
+        dashboardsToDelete.map(({ id }) => id),
       )}`,
     }).then(
       ({ json = {} }) => {
-        const { lastFetchDataConfig } = this.state;
-        if (lastFetchDataConfig) {
-          this.fetchData(lastFetchDataConfig);
-        }
-        this.props.addSuccessToast(json.message);
+        refreshData();
+        addSuccessToast(json.message);
       },
       createErrorHandler(errMsg =>
-        this.props.addDangerToast(
+        addDangerToast(
           t('There was an issue deleting the selected dashboards: ', errMsg),
         ),
       ),
     );
-  };
+  }
 
-  handleBulkDashboardExport = (dashboards: Dashboard[]) => {
-    return window.location.assign(
-      `/api/v1/dashboard/export/?q=${rison.encode(
-        dashboards.map(({ id }) => id),
-      )}`,
-    );
-  };
-
-  fetchData = ({ pageIndex, pageSize, sortBy, filters }: FetchDataConfig) => {
-    // set loading state, cache the last config for fetching data in this component.
-    this.setState({
-      lastFetchDataConfig: {
-        filters,
-        pageIndex,
-        pageSize,
-        sortBy,
+  const columns = useMemo(
+    () => [
+      {
+        Cell: ({
+          row: {
+            original: { id },
+          },
+        }: any) => (
+          <FaveStar
+            itemId={id}
+            saveFaveStar={saveFavoriteStatus}
+            isStarred={favoriteStatus[id]}
+          />
+        ),
+        Header: '',
+        id: 'id',
+        disableSortBy: true,
+        size: 'xs',
       },
-      loading: true,
-    });
-    const filterExps = filters.map(({ id: col, operator: opr, value }) => ({
-      col,
-      opr,
-      value,
-    }));
+      {
+        Cell: ({
+          row: {
+            original: { url, dashboard_title: dashboardTitle },
+          },
+        }: any) => <a href={url}>{dashboardTitle}</a>,
+        Header: t('Title'),
+        accessor: 'dashboard_title',
+      },
 
-    const queryParams = rison.encode({
-      order_column: sortBy[0].id,
-      order_direction: sortBy[0].desc ? 'desc' : 'asc',
-      page: pageIndex,
-      page_size: pageSize,
-      ...(filterExps.length ? { filters: filterExps } : {}),
-    });
+      {
+        Cell: ({
+          row: {
+            original: {
+              changed_by_name: changedByName,
+              changed_by_url: changedByUrl,
+            },
+          },
+        }: any) => <a href={changedByUrl}>{changedByName}</a>,
+        Header: t('Modified by'),
+        accessor: 'changed_by.first_name',
+        size: 'xl',
+      },
+      {
+        Cell: ({
+          row: {
+            original: { published },
+          },
+        }: any) => (published ? t('Published') : t('Draft')),
+        Header: t('Status'),
+        accessor: 'published',
+        size: 'xl',
+      },
+      {
+        Cell: ({
+          row: {
+            original: { changed_on_delta_humanized: changedOn },
+          },
+        }: any) => <span className="no-wrap">{changedOn}</span>,
+        Header: t('Modified'),
+        accessor: 'changed_on_delta_humanized',
+        size: 'xl',
+      },
+      {
+        Cell: ({
+          row: {
+            original: { created_by: createdBy },
+          },
+        }: any) =>
+          createdBy ? `${createdBy.first_name} ${createdBy.last_name}` : '',
+        Header: t('Created by'),
+        accessor: 'created_by',
+        disableSortBy: true,
+        size: 'xl',
+      },
+      {
+        Cell: ({
+          row: {
+            original: { owners = [] },
+          },
+        }: any) => <FacePile users={owners} />,
+        Header: t('Owners'),
+        accessor: 'owners',
+        disableSortBy: true,
+        size: 'xl',
+      },
+      {
+        Cell: ({ row: { original } }: any) => {
+          const handleDelete = () =>
+            handleDashboardDelete(
+              original,
+              refreshData,
+              addSuccessToast,
+              addDangerToast,
+            );
+          const handleEdit = () => openDashboardEditModal(original);
+          const handleExport = () => handleBulkDashboardExport([original]);
 
-    return SupersetClient.get({
-      endpoint: `/api/v1/dashboard/?q=${queryParams}`,
-    })
-      .then(
-        ({ json = {} }) => {
-          this.setState({
-            dashboards: json.result,
-            dashboardCount: json.count,
-          });
+          return (
+            <span className="actions">
+              {canDelete && (
+                <ConfirmStatusChange
+                  title={t('Please confirm')}
+                  description={
+                    <>
+                      {t('Are you sure you want to delete')}{' '}
+                      <b>{original.dashboard_title}</b>?
+                    </>
+                  }
+                  onConfirm={handleDelete}
+                >
+                  {confirmDelete => (
+                    <TooltipWrapper
+                      label="delete-action"
+                      tooltip={t('Delete')}
+                      placement="bottom"
+                    >
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="action-button"
+                        onClick={confirmDelete}
+                      >
+                        <Icon
+                          data-test="dashboard-list-trash-icon"
+                          name="trash"
+                        />
+                      </span>
+                    </TooltipWrapper>
+                  )}
+                </ConfirmStatusChange>
+              )}
+              {canExport && (
+                <TooltipWrapper
+                  label="export-action"
+                  tooltip={t('Export')}
+                  placement="bottom"
+                >
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className="action-button"
+                    onClick={handleExport}
+                  >
+                    <Icon name="share" />
+                  </span>
+                </TooltipWrapper>
+              )}
+              {canEdit && (
+                <TooltipWrapper
+                  label="edit-action"
+                  tooltip={t('Edit')}
+                  placement="bottom"
+                >
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className="action-button"
+                    onClick={handleEdit}
+                  >
+                    <Icon name="edit-alt" />
+                  </span>
+                </TooltipWrapper>
+              )}
+            </span>
+          );
         },
+        Header: t('Actions'),
+        id: 'actions',
+        hidden: !canEdit && !canDelete && !canExport,
+        disableSortBy: true,
+      },
+    ],
+    [canEdit, canDelete, canExport, favoriteStatus],
+  );
+
+  const filters: Filters = [
+    {
+      Header: t('Owner'),
+      id: 'owners',
+      input: 'select',
+      operator: FilterOperators.relationManyMany,
+      unfilteredLabel: t('All'),
+      fetchSelects: createFetchRelated(
+        'dashboard',
+        'owners',
         createErrorHandler(errMsg =>
-          this.props.addDangerToast(
-            t('An error occurred while fetching dashboards: %s', errMsg),
+          addDangerToast(
+            t(
+              'An error occurred while fetching dashboard owner values: %s',
+              errMsg,
+            ),
           ),
         ),
-      )
-      .finally(() => {
-        this.setState({ loading: false });
-      });
-  };
+        props.user.userId,
+      ),
+      paginate: true,
+    },
+    {
+      Header: t('Created by'),
+      id: 'created_by',
+      input: 'select',
+      operator: FilterOperators.relationOneMany,
+      unfilteredLabel: t('All'),
+      fetchSelects: createFetchRelated(
+        'dashboard',
+        'created_by',
+        createErrorHandler(errMsg =>
+          addDangerToast(
+            t(
+              'An error occurred while fetching dashboard created by values: %s',
+              errMsg,
+            ),
+          ),
+        ),
+        props.user.userId,
+      ),
+      paginate: true,
+    },
+    {
+      Header: t('Status'),
+      id: 'published',
+      input: 'select',
+      operator: FilterOperators.equals,
+      unfilteredLabel: t('Any'),
+      selects: [
+        { label: t('Published'), value: true },
+        { label: t('Unpublished'), value: false },
+      ],
+    },
+    {
+      Header: t('Favorite'),
+      id: 'id',
+      urlDisplay: 'favorite',
+      input: 'select',
+      operator: FilterOperators.dashboardIsFav,
+      unfilteredLabel: t('Any'),
+      selects: [
+        { label: t('Yes'), value: true },
+        { label: t('No'), value: false },
+      ],
+    },
+    {
+      Header: t('Search'),
+      id: 'dashboard_title',
+      input: 'search',
+      operator: FilterOperators.titleOrSlug,
+    },
+  ];
 
-  renderActions(original: Dashboard) {
-    const handleDelete = () => this.handleDashboardDelete(original);
-    const handleEdit = () => this.openDashboardEditModal(original);
-    const handleExport = () => this.handleBulkDashboardExport([original]);
-    if (!this.canEdit && !this.canDelete && !this.canExport) {
-      return null;
-    }
+  const sortTypes = [
+    {
+      desc: false,
+      id: 'dashboard_title',
+      label: t('Alphabetical'),
+      value: 'alphabetical',
+    },
+    {
+      desc: true,
+      id: 'changed_on_delta_humanized',
+      label: t('Recently modified'),
+      value: 'recently_modified',
+    },
+    {
+      desc: false,
+      id: 'changed_on_delta_humanized',
+      label: t('Least recently modified'),
+      value: 'least_recently_modified',
+    },
+  ];
+
+  function renderCard(dashboard: Dashboard) {
     return (
-      <span className="actions">
-        {this.canDelete && (
-          <ConfirmStatusChange
-            title={t('Please Confirm')}
-            description={
-              <>
-                {t('Are you sure you want to delete')}{' '}
-                <b>{original.dashboard_title}</b>?
-              </>
-            }
-            onConfirm={handleDelete}
-          >
-            {confirmDelete => (
-              <span
-                role="button"
-                tabIndex={0}
-                className="action-button"
-                onClick={confirmDelete}
-              >
-                <Icon name="trash" />
-              </span>
-            )}
-          </ConfirmStatusChange>
-        )}
-        {this.canExport && (
-          <span
-            role="button"
-            tabIndex={0}
-            className="action-button"
-            onClick={handleExport}
-          >
-            <Icon name="share" />
-          </span>
-        )}
-        {this.canEdit && (
-          <span
-            role="button"
-            tabIndex={0}
-            className="action-button"
-            onClick={handleEdit}
-          >
-            <Icon name="pencil" />
-          </span>
-        )}
-      </span>
-    );
-  }
-
-  renderCard = (props: Dashboard & { loading: boolean }) => {
-    const menu = (
-      <Menu>
-        {this.canDelete && (
-          <Menu.Item>
-            <ConfirmStatusChange
-              title={t('Please Confirm')}
-              description={
-                <>
-                  {t('Are you sure you want to delete')}{' '}
-                  <b>{props.dashboard_title}</b>?
-                </>
-              }
-              onConfirm={() => this.handleDashboardDelete(props)}
-            >
-              {confirmDelete => (
-                <div
-                  role="button"
-                  tabIndex={0}
-                  className="action-button"
-                  onClick={confirmDelete}
-                >
-                  <ListViewCard.MenuIcon name="trash" /> Delete
-                </div>
-              )}
-            </ConfirmStatusChange>
-          </Menu.Item>
-        )}
-        {this.canExport && (
-          <Menu.Item
-            role="button"
-            tabIndex={0}
-            onClick={() => this.handleBulkDashboardExport([props])}
-          >
-            <ListViewCard.MenuIcon name="share" /> Export
-          </Menu.Item>
-        )}
-        {this.canEdit && (
-          <Menu.Item
-            role="button"
-            tabIndex={0}
-            onClick={() => this.openDashboardEditModal(props)}
-          >
-            <ListViewCard.MenuIcon name="pencil" /> Edit
-          </Menu.Item>
-        )}
-      </Menu>
-    );
-
-    return (
-      <ListViewCard
-        title={props.dashboard_title}
-        loading={props.loading}
-        titleRight={<Label>{props.published ? 'published' : 'draft'}</Label>}
-        url={this.state.bulkSelectEnabled ? undefined : props.url}
-        imgURL={props.thumbnail_url}
-        imgFallbackURL="/static/assets/images/dashboard-card-fallback.png"
-        description={t('Last modified %s', props.changed_on_delta_humanized)}
-        coverLeft={(props.owners || []).slice(0, 5).map(owner => (
-          <AvatarIcon
-            key={owner.id}
-            uniqueKey={`${owner.username}-${props.id}`}
-            firstName={owner.first_name}
-            lastName={owner.last_name}
-            iconSize={24}
-            textSize={9}
-          />
-        ))}
-        actions={
-          <ListViewCard.Actions>
-            <FaveStar
-              itemId={props.id}
-              fetchFaveStar={this.fetchMethods.fetchFaveStar}
-              saveFaveStar={this.fetchMethods.saveFaveStar}
-              isStarred={!!this.state.favoriteStatus[props.id]}
-              width={20}
-              height={20}
-            />
-            <Dropdown overlay={menu}>
-              <Icon name="more" />
-            </Dropdown>
-          </ListViewCard.Actions>
-        }
+      <DashboardCard
+        dashboard={dashboard}
+        hasPerm={hasPerm}
+        bulkSelectEnabled={bulkSelectEnabled}
+        refreshData={refreshData}
+        loading={loading}
+        addDangerToast={addDangerToast}
+        addSuccessToast={addSuccessToast}
+        openDashboardEditModal={openDashboardEditModal}
+        saveFavoriteStatus={saveFavoriteStatus}
+        favoriteStatus={favoriteStatus[dashboard.id]}
       />
     );
-  };
-
-  render() {
-    const {
-      bulkSelectEnabled,
-      dashboards,
-      dashboardCount,
-      loading,
-      dashboardToEdit,
-    } = this.state;
-    return (
-      <>
-        <SubMenu
-          name={t('Dashboards')}
-          secondaryButton={
-            this.canDelete || this.canExport
-              ? {
-                  name: t('Bulk Select'),
-                  onClick: this.toggleBulkSelect,
-                }
-              : undefined
-          }
-        />
-        <ConfirmStatusChange
-          title={t('Please confirm')}
-          description={t(
-            'Are you sure you want to delete the selected dashboards?',
-          )}
-          onConfirm={this.handleBulkDashboardDelete}
-        >
-          {confirmDelete => {
-            const bulkActions: ListViewProps['bulkActions'] = [];
-            if (this.canDelete) {
-              bulkActions.push({
-                key: 'delete',
-                name: t('Delete'),
-                type: 'danger',
-                onSelect: confirmDelete,
-              });
-            }
-            if (this.canExport) {
-              bulkActions.push({
-                key: 'export',
-                name: t('Export'),
-                type: 'primary',
-                onSelect: this.handleBulkDashboardExport,
-              });
-            }
-            return (
-              <>
-                {dashboardToEdit && (
-                  <PropertiesModal
-                    dashboardId={dashboardToEdit.id}
-                    show
-                    onHide={() => this.setState({ dashboardToEdit: null })}
-                    onSubmit={this.handleDashboardEdit}
-                  />
-                )}
-                <ListView
-                  bulkActions={bulkActions}
-                  bulkSelectEnabled={bulkSelectEnabled}
-                  cardSortSelectOptions={this.sortTypes}
-                  className="dashboard-list-view"
-                  columns={this.columns}
-                  count={dashboardCount}
-                  data={dashboards}
-                  disableBulkSelect={this.toggleBulkSelect}
-                  fetchData={this.fetchData}
-                  filters={this.filters}
-                  initialSort={this.initialSort}
-                  loading={loading}
-                  pageSize={PAGE_SIZE}
-                  renderCard={this.renderCard}
-                />
-              </>
-            );
-          }}
-        </ConfirmStatusChange>
-      </>
-    );
   }
+
+  const subMenuButtons: SubMenuProps['buttons'] = [];
+  if (canDelete || canExport) {
+    subMenuButtons.push({
+      name: t('Bulk select'),
+      buttonStyle: 'secondary',
+      'data-test': 'bulk-select',
+      onClick: toggleBulkSelect,
+    });
+  }
+  if (canCreate) {
+    subMenuButtons.push({
+      name: (
+        <>
+          <i className="fa fa-plus" /> {t('Dashboard')}
+        </>
+      ),
+      buttonStyle: 'primary',
+      onClick: () => {
+        window.location.assign('/dashboard/new');
+      },
+    });
+  }
+  if (isFeatureEnabled(FeatureFlag.VERSIONED_EXPORT)) {
+    subMenuButtons.push({
+      name: <Icon name="import" />,
+      buttonStyle: 'link',
+      onClick: openDashboardImportModal,
+    });
+  }
+  return (
+    <>
+      <SubMenu name={t('Dashboards')} buttons={subMenuButtons} />
+      <ConfirmStatusChange
+        title={t('Please confirm')}
+        description={t(
+          'Are you sure you want to delete the selected dashboards?',
+        )}
+        onConfirm={handleBulkDashboardDelete}
+      >
+        {confirmDelete => {
+          const bulkActions: ListViewProps['bulkActions'] = [];
+          if (canDelete) {
+            bulkActions.push({
+              key: 'delete',
+              name: t('Delete'),
+              type: 'danger',
+              onSelect: confirmDelete,
+            });
+          }
+          if (canExport) {
+            bulkActions.push({
+              key: 'export',
+              name: t('Export'),
+              type: 'primary',
+              onSelect: handleBulkDashboardExport,
+            });
+          }
+          return (
+            <>
+              {dashboardToEdit && (
+                <PropertiesModal
+                  dashboardId={dashboardToEdit.id}
+                  show
+                  onHide={() => setDashboardToEdit(null)}
+                  onSubmit={handleDashboardEdit}
+                />
+              )}
+              <ListView<Dashboard>
+                bulkActions={bulkActions}
+                bulkSelectEnabled={bulkSelectEnabled}
+                cardSortSelectOptions={sortTypes}
+                className="dashboard-list-view"
+                columns={columns}
+                count={dashboardCount}
+                data={dashboards}
+                disableBulkSelect={toggleBulkSelect}
+                fetchData={fetchData}
+                filters={filters}
+                initialSort={initialSort}
+                loading={loading}
+                pageSize={PAGE_SIZE}
+                renderCard={renderCard}
+                defaultViewMode={
+                  isFeatureEnabled(FeatureFlag.LISTVIEWS_DEFAULT_CARD_VIEW)
+                    ? 'card'
+                    : 'table'
+                }
+              />
+            </>
+          );
+        }}
+      </ConfirmStatusChange>
+
+      <ImportModelsModal
+        resourceName="dashboard"
+        resourceLabel={t('dashboard')}
+        passwordsNeededMessage={PASSWORDS_NEEDED_MESSAGE}
+        confirmOverwriteMessage={CONFIRM_OVERWRITE_MESSAGE}
+        addDangerToast={addDangerToast}
+        addSuccessToast={addSuccessToast}
+        onModelImport={handleDashboardImport}
+        show={importingDashboard}
+        onHide={closeDashboardImportModal}
+        passwordFields={passwordFields}
+        setPasswordFields={setPasswordFields}
+      />
+    </>
+  );
 }
 
 export default withToasts(DashboardList);

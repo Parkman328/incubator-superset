@@ -17,6 +17,7 @@
 import logging
 from collections import defaultdict
 from datetime import date
+from functools import wraps
 from typing import Any, Callable, DefaultDict, Dict, List, Optional, Set, Tuple, Union
 from urllib import parse
 
@@ -26,12 +27,20 @@ import simplejson as json
 from flask import g, request
 from flask_appbuilder.security.sqla import models as ab_models
 from flask_appbuilder.security.sqla.models import User
+from flask_babel import _
+from sqlalchemy.orm.exc import NoResultFound
 
 import superset.models.core as models
-from superset import app, dataframe, db, is_feature_enabled, result_set
+from superset import app, dataframe, db, result_set, viz
 from superset.connectors.connector_registry import ConnectorRegistry
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
-from superset.exceptions import SupersetException, SupersetSecurityException
+from superset.exceptions import (
+    CacheLoadError,
+    SerializationError,
+    SupersetException,
+    SupersetSecurityException,
+)
+from superset.extensions import cache_manager
 from superset.legacy import update_time_range
 from superset.models.core import Database
 from superset.models.dashboard import Dashboard
@@ -44,11 +53,6 @@ from superset.viz import BaseViz
 
 logger = logging.getLogger(__name__)
 stats_logger = app.config["STATS_LOGGER"]
-
-if is_feature_enabled("SIP_38_VIZ_REARCHITECTURE"):
-    from superset import viz_sip38 as viz
-else:
-    from superset import viz  # type: ignore
 
 
 REJECTED_FORM_DATA_KEYS: List[str] = []
@@ -102,27 +106,48 @@ def get_permissions(
 
 
 def get_viz(
-    form_data: FormData, datasource_type: str, datasource_id: int, force: bool = False
+    form_data: FormData,
+    datasource_type: str,
+    datasource_id: int,
+    force: bool = False,
+    force_cached: bool = False,
 ) -> BaseViz:
     viz_type = form_data.get("viz_type", "table")
     datasource = ConnectorRegistry.get_datasource(
         datasource_type, datasource_id, db.session
     )
-    viz_obj = viz.viz_types[viz_type](datasource, form_data=form_data, force=force)
+    viz_obj = viz.viz_types[viz_type](
+        datasource, form_data=form_data, force=force, force_cached=force_cached
+    )
     return viz_obj
+
+
+def loads_request_json(request_json_data: str) -> Dict[Any, Any]:
+    try:
+        return json.loads(request_json_data)
+    except (TypeError, json.JSONDecodeError):
+        return {}
 
 
 def get_form_data(
     slice_id: Optional[int] = None, use_slice_data: bool = False
 ) -> Tuple[Dict[str, Any], Optional[Slice]]:
     form_data = {}
+    # chart data API requests are JSON
+    request_json_data = (
+        request.json["queries"][0]
+        if request.is_json and "queries" in request.json
+        else None
+    )
     request_form_data = request.form.get("form_data")
     request_args_data = request.args.get("form_data")
+    if request_json_data:
+        form_data.update(request_json_data)
     if request_form_data:
-        form_data.update(json.loads(request_form_data))
+        form_data.update(loads_request_json(request_form_data))
     # request params can overwrite the body
     if request_args_data:
-        form_data.update(json.loads(request_args_data))
+        form_data.update(loads_request_json(request_args_data))
 
     # Fallback to using the Flask globals (used for cache warmup) if defined.
     if not form_data and hasattr(g, "form_data"):
@@ -135,7 +160,7 @@ def get_form_data(
             url_str = parse.unquote_plus(
                 saved_url.url.split("?")[1][10:], encoding="utf-8"
             )
-            url_form_data = json.loads(url_str)
+            url_form_data = loads_request_json(url_str)
             # allow form_date in request override saved url
             url_form_data.update(form_data)
             form_data = url_form_data
@@ -198,7 +223,7 @@ def get_datasource_info(
 
     if not datasource_id:
         raise SupersetException(
-            "The datasource associated with this chart no longer exists"
+            _("The dataset associated with this chart no longer exists")
         )
 
     datasource_id = int(datasource_id)
@@ -328,7 +353,7 @@ def get_dashboard_extra_filters(
     return []
 
 
-def build_extra_filters(
+def build_extra_filters(  # pylint: disable=too-many-locals,too-many-nested-blocks
     layout: Dict[str, Dict[str, Any]],
     filter_scopes: Dict[str, Dict[str, Any]],
     default_filters: Dict[str, Dict[str, List[Any]]],
@@ -336,11 +361,22 @@ def build_extra_filters(
 ) -> List[Dict[str, Any]]:
     extra_filters = []
 
-    # do not apply filters if chart is not in filter's scope or
-    # chart is immune to the filter
+    # do not apply filters if chart is not in filter's scope or chart is immune to the
+    # filter.
     for filter_id, columns in default_filters.items():
+        filter_slice = db.session.query(Slice).filter_by(id=filter_id).one_or_none()
+
+        filter_configs: List[Dict[str, Any]] = []
+        if filter_slice:
+            filter_configs = (
+                json.loads(filter_slice.params or "{}").get("filter_configs") or []
+            )
+
         scopes_by_filter_field = filter_scopes.get(filter_id, {})
         for col, val in columns.items():
+            if not val:
+                continue
+
             current_field_scopes = scopes_by_filter_field.get(col, {})
             scoped_container_ids = current_field_scopes.get("scope", ["ROOT_ID"])
             immune_slice_ids = current_field_scopes.get("immune", [])
@@ -349,7 +385,25 @@ def build_extra_filters(
                 if slice_id not in immune_slice_ids and is_slice_in_container(
                     layout, container_id, slice_id
                 ):
-                    extra_filters.append({"col": col, "op": "in", "val": val})
+                    # Ensure that the filter value encoding adheres to the filter select
+                    # type.
+                    for filter_config in filter_configs:
+                        if filter_config["column"] == col:
+                            is_multiple = filter_config["multiple"]
+
+                            if not is_multiple and isinstance(val, list):
+                                val = val[0]
+                            elif is_multiple and not isinstance(val, list):
+                                val = [val]
+                            break
+
+                    extra_filters.append(
+                        {
+                            "col": col,
+                            "op": "in" if isinstance(val, list) else "==",
+                            "val": val,
+                        }
+                    )
 
     return extra_filters
 
@@ -379,10 +433,43 @@ def is_owner(obj: Union[Dashboard, Slice], user: User) -> bool:
     return obj and user in obj.owners
 
 
+def check_resource_permissions(check_perms: Callable[..., Any],) -> Callable[..., Any]:
+    """
+    A decorator for checking permissions on a request using the passed-in function.
+    """
+
+    def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
+        @wraps(f)
+        def wrapper(*args: Any, **kwargs: Any) -> None:
+            # check if the user can access the resource
+            check_perms(*args, **kwargs)
+            return f(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def check_explore_cache_perms(_self: Any, cache_key: str) -> None:
+    """
+    Loads async explore_json request data from cache and performs access check
+
+    :param _self: the Superset view instance
+    :param cache_key: the cache key passed into /explore_json/data/
+    :raises SupersetSecurityException: If the user cannot access the resource
+    """
+    cached = cache_manager.cache.get(cache_key)
+    if not cached:
+        raise CacheLoadError("Cached data not found")
+
+    check_datasource_perms(_self, form_data=cached["form_data"])
+
+
 def check_datasource_perms(
     _self: Any,
     datasource_type: Optional[str] = None,
     datasource_id: Optional[int] = None,
+    **kwargs: Any
 ) -> None:
     """
     Check if user can access a cached response from explore_json.
@@ -395,7 +482,7 @@ def check_datasource_perms(
     :raises SupersetSecurityException: If the user cannot access the resource
     """
 
-    form_data = get_form_data()[0]
+    form_data = kwargs["form_data"] if "form_data" in kwargs else get_form_data()[0]
 
     try:
         datasource_id, datasource_type = get_datasource_info(
@@ -415,16 +502,25 @@ def check_datasource_perms(
             SupersetError(
                 error_type=SupersetErrorType.UNKNOWN_DATASOURCE_TYPE_ERROR,
                 level=ErrorLevel.ERROR,
-                message="Could not determine datasource type",
+                message=_("Could not determine datasource type"),
             )
         )
 
-    viz_obj = get_viz(
-        datasource_type=datasource_type,
-        datasource_id=datasource_id,
-        form_data=form_data,
-        force=False,
-    )
+    try:
+        viz_obj = get_viz(
+            datasource_type=datasource_type,
+            datasource_id=datasource_id,
+            form_data=form_data,
+            force=False,
+        )
+    except NoResultFound:
+        raise SupersetSecurityException(
+            SupersetError(
+                error_type=SupersetErrorType.UNKNOWN_DATASOURCE_TYPE_ERROR,
+                level=ErrorLevel.ERROR,
+                message=_("Could not find viz object"),
+            )
+        )
 
     viz_obj.raise_for_access()
 
@@ -443,12 +539,21 @@ def check_slice_perms(_self: Any, slice_id: int) -> None:
     form_data, slc = get_form_data(slice_id, use_slice_data=True)
 
     if slc:
-        viz_obj = get_viz(
-            datasource_type=slc.datasource.type,
-            datasource_id=slc.datasource.id,
-            form_data=form_data,
-            force=False,
-        )
+        try:
+            viz_obj = get_viz(
+                datasource_type=slc.datasource.type,
+                datasource_id=slc.datasource.id,
+                form_data=form_data,
+                force=False,
+            )
+        except NoResultFound:
+            raise SupersetSecurityException(
+                SupersetError(
+                    error_type=SupersetErrorType.UNKNOWN_DATASOURCE_TYPE_ERROR,
+                    level=ErrorLevel.ERROR,
+                    message="Could not find viz object",
+                )
+            )
 
         viz_obj.raise_for_access()
 
@@ -464,7 +569,10 @@ def _deserialize_results_payload(
             ds_payload = msgpack.loads(payload, raw=False)
 
         with stats_timing("sqllab.query.results_backend_pa_deserialize", stats_logger):
-            pa_table = pa.deserialize(ds_payload["data"])
+            try:
+                pa_table = pa.deserialize(ds_payload["data"])
+            except pa.ArrowSerializationError:
+                raise SerializationError("Unable to deserialize table")
 
         df = result_set.SupersetResultSet.convert_table_to_df(pa_table)
         ds_payload["data"] = dataframe.df_to_records(df) or []

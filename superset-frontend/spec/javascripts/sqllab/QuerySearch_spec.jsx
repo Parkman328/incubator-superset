@@ -17,18 +17,23 @@
  * under the License.
  */
 import React from 'react';
-import { Button } from 'react-bootstrap';
+import Button from 'src/components/Button';
 import { shallow } from 'enzyme';
 import sinon from 'sinon';
-
+import fetchMock from 'fetch-mock';
 import Select from 'src/components/Select';
 import QuerySearch from 'src/SqlLab/components/QuerySearch';
+
+const SEARCH_ENDPOINT = 'glob:*/superset/search_queries?*';
+
+fetchMock.get(SEARCH_ENDPOINT, []);
 
 describe('QuerySearch', () => {
   const search = sinon.spy(QuerySearch.prototype, 'refreshQueries');
   const mockedProps = {
-    actions: {},
+    actions: { addDangerToast: jest.fn() },
     height: 0,
+    displayLimit: 50,
   };
   it('is valid', () => {
     expect(React.isValidElement(<QuerySearch {...mockedProps} />)).toBe(true);
@@ -69,7 +74,7 @@ describe('QuerySearch', () => {
   });
 
   it('refreshes queries when enter (only) is pressed on the input', () => {
-    const callCount = search.callCount;
+    const { callCount } = search;
     wrapper.find('input').simulate('keyDown', { keyCode: 'a'.charCodeAt(0) });
     expect(search.callCount).toBe(callCount);
     wrapper.find('input').simulate('keyDown', { keyCode: '\r'.charCodeAt(0) });
@@ -81,7 +86,7 @@ describe('QuerySearch', () => {
   });
 
   it('refreshes queries when clicked', () => {
-    const callCount = search.callCount;
+    const { callCount } = search;
     wrapper.find(Button).simulate('click');
     expect(search.callCount).toBe(callCount + 1);
   });

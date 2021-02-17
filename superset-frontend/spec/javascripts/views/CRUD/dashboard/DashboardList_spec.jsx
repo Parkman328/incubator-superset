@@ -17,11 +17,14 @@
  * under the License.
  */
 import React from 'react';
-import { mount } from 'enzyme';
 import thunk from 'redux-thunk';
 import configureStore from 'redux-mock-store';
 import fetchMock from 'fetch-mock';
-import { supersetTheme, ThemeProvider } from '@superset-ui/style';
+import { Provider } from 'react-redux';
+import * as featureFlags from 'src/featureFlags';
+
+import waitForComponentToPaint from 'spec/helpers/waitForComponentToPaint';
+import { styledMount as mount } from 'spec/helpers/theming';
 
 import ConfirmStatusChange from 'src/components/ConfirmStatusChange';
 import DashboardList from 'src/views/CRUD/dashboard/DashboardList';
@@ -35,7 +38,12 @@ const store = mockStore({});
 
 const dashboardsInfoEndpoint = 'glob:*/api/v1/dashboard/_info*';
 const dashboardOwnersEndpoint = 'glob:*/api/v1/dashboard/related/owners*';
+const dashboardCreatedByEndpoint =
+  'glob:*/api/v1/dashboard/related/created_by*';
+const dashboardFavoriteStatusEndpoint =
+  'glob:*/api/v1/dashboard/favorite_status*';
 const dashboardsEndpoint = 'glob:*/api/v1/dashboard/?*';
+const dashboardEndpoint = 'glob:*/api/v1/dashboard/*';
 
 const mockDashboards = [...new Array(3)].map((_, i) => ({
   id: i,
@@ -47,30 +55,57 @@ const mockDashboards = [...new Array(3)].map((_, i) => ({
   published: true,
   changed_on_utc: new Date().toISOString(),
   changed_on_delta_humanized: '5 minutes ago',
-  owners: [{ first_name: 'admin', last_name: 'admin_user' }],
+  owners: [{ id: 1, first_name: 'admin', last_name: 'admin_user' }],
   thumbnail_url: '/thumbnail',
 }));
 
+const mockUser = {
+  userId: 1,
+};
+
 fetchMock.get(dashboardsInfoEndpoint, {
-  permissions: ['can_list', 'can_edit', 'can_delete'],
+  permissions: ['can_read', 'can_write'],
 });
 fetchMock.get(dashboardOwnersEndpoint, {
   result: [],
 });
+fetchMock.get(dashboardCreatedByEndpoint, {
+  result: [],
+});
+fetchMock.get(dashboardFavoriteStatusEndpoint, {
+  result: [],
+});
+
 fetchMock.get(dashboardsEndpoint, {
   result: mockDashboards,
   dashboard_count: 3,
+});
+
+fetchMock.get(dashboardEndpoint, {
+  result: mockDashboards[0],
 });
 
 global.URL.createObjectURL = jest.fn();
 fetchMock.get('/thumbnail', { body: new Blob(), sendAsJson: false });
 
 describe('DashboardList', () => {
+  const isFeatureEnabledMock = jest
+    .spyOn(featureFlags, 'isFeatureEnabled')
+    .mockImplementation(feature => feature === 'LISTVIEWS_DEFAULT_CARD_VIEW');
+
+  afterAll(() => {
+    isFeatureEnabledMock.restore();
+  });
+
   const mockedProps = {};
-  const wrapper = mount(<DashboardList {...mockedProps} />, {
-    context: { store },
-    wrappingComponent: ThemeProvider,
-    wrappingComponentProps: { theme: supersetTheme },
+  const wrapper = mount(
+    <Provider store={store}>
+      <DashboardList {...mockedProps} user={mockUser} />
+    </Provider>,
+  );
+
+  beforeAll(async () => {
+    await waitForComponentToPaint(wrapper);
   });
 
   it('renders', () => {
@@ -99,29 +134,40 @@ describe('DashboardList', () => {
     expect(wrapper.find(ListViewCard)).toExist();
   });
 
-  it('renders a table view', () => {
+  it('renders a table view', async () => {
     wrapper.find('[data-test="list-view"]').first().simulate('click');
+    await waitForComponentToPaint(wrapper);
     expect(wrapper.find('table')).toExist();
   });
 
-  it('edits', () => {
+  it('edits', async () => {
     expect(wrapper.find(PropertiesModal)).not.toExist();
-    wrapper.find('[data-test="pencil"]').first().simulate('click');
+    wrapper.find('[data-test="edit-alt"]').first().simulate('click');
+    await waitForComponentToPaint(wrapper);
     expect(wrapper.find(PropertiesModal)).toExist();
   });
 
-  it('card view edits', () => {
-    wrapper.find('[data-test="pencil"]').last().simulate('click');
+  it('card view edits', async () => {
+    wrapper.find('[data-test="edit-alt"]').last().simulate('click');
+    await waitForComponentToPaint(wrapper);
     expect(wrapper.find(PropertiesModal)).toExist();
   });
 
-  it('delete', () => {
-    wrapper.find('[data-test="trash"]').first().simulate('click');
+  it('delete', async () => {
+    wrapper
+      .find('[data-test="dashboard-list-trash-icon"]')
+      .first()
+      .simulate('click');
+    await waitForComponentToPaint(wrapper);
     expect(wrapper.find(ConfirmStatusChange)).toExist();
   });
 
-  it('card view delete', () => {
-    wrapper.find('[data-test="trash"]').last().simulate('click');
+  it('card view delete', async () => {
+    wrapper
+      .find('[data-test="dashboard-list-trash-icon"]')
+      .last()
+      .simulate('click');
+    await waitForComponentToPaint(wrapper);
     expect(wrapper.find(ConfirmStatusChange)).toExist();
   });
 });

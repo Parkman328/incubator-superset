@@ -16,21 +16,15 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import { Badge } from 'react-bootstrap';
-import AceEditor from 'react-ace';
-import 'brace/mode/sql';
-import 'brace/mode/json';
-import 'brace/mode/html';
-import 'brace/mode/markdown';
-import 'brace/theme/textmate';
-
-import { t } from '@superset-ui/translation';
+import Badge from 'src/common/components/Badge';
+import { t, styled } from '@superset-ui/core';
 import { InfoTooltipWithTrigger } from '@superset-ui/chart-controls';
+import { debounce } from 'lodash';
 
-import ModalTrigger from '../../components/ModalTrigger';
-import Button from '../../components/Button';
+import ModalTrigger from 'src/components/ModalTrigger';
+import { ConfigEditor } from 'src/components/AsyncAceEditor';
 
 const propTypes = {
   onChange: PropTypes.func,
@@ -39,52 +33,39 @@ const propTypes = {
 };
 
 const defaultProps = {
-  label: null,
-  description: null,
   onChange: () => {},
   code: '{}',
 };
 
-export default class TemplateParamsEditor extends React.Component {
-  constructor(props) {
-    super(props);
-    const codeText = props.code || '{}';
-    this.state = {
-      codeText,
-      parsedJSON: null,
-      isValid: true,
-    };
-    this.onChange = this.onChange.bind(this);
+const StyledConfigEditor = styled(ConfigEditor)`
+  &.ace_editor {
+    border: 1px solid ${({ theme }) => theme.colors.grayscale.light2};
   }
-  componentDidMount() {
-    this.onChange(this.state.codeText);
-  }
-  onChange(value) {
-    const codeText = value;
-    let isValid;
-    let parsedJSON = {};
+`;
+
+function TemplateParamsEditor({ code, language, onChange }) {
+  const [parsedJSON, setParsedJSON] = useState();
+  const [isValid, setIsValid] = useState(true);
+
+  useEffect(() => {
     try {
-      parsedJSON = JSON.parse(value);
-      isValid = true;
-    } catch (e) {
-      isValid = false;
+      setParsedJSON(JSON.parse(code));
+      setIsValid(true);
+    } catch {
+      setParsedJSON({});
+      setIsValid(false);
     }
-    this.setState({ parsedJSON, isValid, codeText });
-    const newValue = isValid ? codeText : '{}';
-    if (newValue !== this.props.code) {
-      this.props.onChange(newValue);
-    }
-  }
-  renderDoc() {
-    return (
+  }, [code]);
+
+  const modalBody = (
+    <div>
       <p>
-        {t('Assign a set of parameters as')}
+        Assign a set of parameters as
         <code>JSON</code>
-        {t('below (example:')}
+        below (example:
         <code>{'{"my_table": "foo"}'}</code>
-        {t('), and they become available in your SQL (example:')}
-        <code>SELECT * FROM {'{{ my_table }}'} </code>
-        {t(') by using')}&nbsp;
+        ), and they become available in your SQL (example:
+        <code>SELECT * FROM {'{{ my_table }}'} </code>) by using&nbsp;
         <a
           href="https://superset.apache.org/sqllab.html#templating-with-jinja"
           target="_blank"
@@ -94,53 +75,45 @@ export default class TemplateParamsEditor extends React.Component {
         </a>{' '}
         syntax.
       </p>
-    );
-  }
-  renderModalBody() {
-    return (
-      <div>
-        {this.renderDoc()}
-        <AceEditor
-          mode={this.props.language}
-          theme="textmate"
-          style={{ border: '1px solid #CCC' }}
-          minLines={25}
-          maxLines={50}
-          onChange={this.onChange}
-          width="100%"
-          editorProps={{ $blockScrolling: true }}
-          enableLiveAutocompletion
-          value={this.state.codeText}
-        />
-      </div>
-    );
-  }
-  render() {
-    const paramCount = this.state.parsedJSON
-      ? Object.keys(this.state.parsedJSON).length
-      : 0;
-    return (
-      <ModalTrigger
-        modalTitle={t('Template Parameters')}
-        triggerNode={
-          <Button tooltip={t('Edit template parameters')}>
-            {`${t('parameters')} `}
-            {paramCount > 0 && <Badge>{paramCount}</Badge>}
-            {!this.state.isValid && (
-              <InfoTooltipWithTrigger
-                icon="exclamation-triangle"
-                bsStyle="danger"
-                tooltip={t('Invalid JSON')}
-                label="invalid-json"
-              />
-            )}
-          </Button>
-        }
-        modalBody={this.renderModalBody(true)}
+      <StyledConfigEditor
+        keywords={[]}
+        mode={language}
+        minLines={25}
+        maxLines={50}
+        onChange={debounce(onChange, 200)}
+        width="100%"
+        editorProps={{ $blockScrolling: true }}
+        enableLiveAutocompletion
+        value={code}
       />
-    );
-  }
+    </div>
+  );
+
+  const paramCount = parsedJSON ? Object.keys(parsedJSON).length : 0;
+
+  return (
+    <ModalTrigger
+      modalTitle={t('Template parameters')}
+      triggerNode={
+        <div tooltip={t('Edit template parameters')} buttonSize="small">
+          {`${t('Parameters')} `}
+          <Badge count={paramCount} />
+          {!isValid && (
+            <InfoTooltipWithTrigger
+              icon="exclamation-triangle"
+              bsStyle="danger"
+              tooltip={t('Invalid JSON')}
+              label="invalid-json"
+            />
+          )}
+        </div>
+      }
+      modalBody={modalBody}
+    />
+  );
 }
 
 TemplateParamsEditor.propTypes = propTypes;
 TemplateParamsEditor.defaultProps = defaultProps;
+
+export default TemplateParamsEditor;

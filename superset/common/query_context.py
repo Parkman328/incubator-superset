@@ -17,21 +17,29 @@
 import copy
 import logging
 import math
-from datetime import datetime, timedelta
-from typing import Any, ClassVar, Dict, List, Optional, Union
+from typing import Any, cast, ClassVar, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
-from flask_babel import gettext as _
+from flask_babel import _
 
-from superset import app, cache, db, security_manager
+from superset import app, db, is_feature_enabled
+from superset.annotation_layers.dao import AnnotationLayerDAO
+from superset.charts.dao import ChartDAO
 from superset.common.query_object import QueryObject
 from superset.connectors.base.models import BaseDatasource
 from superset.connectors.connector_registry import ConnectorRegistry
-from superset.exceptions import QueryObjectValidationError
+from superset.exceptions import (
+    CacheLoadError,
+    QueryObjectValidationError,
+    SupersetException,
+)
+from superset.extensions import cache_manager, security_manager
 from superset.stats_logger import BaseStatsLogger
 from superset.utils import core as utils
+from superset.utils.cache import generate_cache_key, set_and_log_cache
 from superset.utils.core import DTTM_ALIAS
+from superset.views.utils import get_viz
 
 config = app.config
 stats_logger: BaseStatsLogger = config["STATS_LOGGER"]
@@ -73,6 +81,12 @@ class QueryContext:
         self.custom_cache_timeout = custom_cache_timeout
         self.result_type = result_type or utils.ChartDataResultType.FULL
         self.result_format = result_format or utils.ChartDataResultFormat.JSON
+        self.cache_values = {
+            "datasource": datasource,
+            "queries": queries,
+            "result_type": self.result_type,
+            "result_format": self.result_format,
+        }
 
     def get_query_result(self, query_object: QueryObject) -> Dict[str, Any]:
         """Returns a pandas dataframe based on the query object"""
@@ -97,17 +111,12 @@ class QueryContext:
         # If the datetime format is unix, the parse will use the corresponding
         # parsing logic
         if not df.empty:
-            if DTTM_ALIAS in df.columns:
-                if timestamp_format in ("epoch_s", "epoch_ms"):
-                    # Column has already been formatted as a timestamp.
-                    df[DTTM_ALIAS] = df[DTTM_ALIAS].apply(pd.Timestamp)
-                else:
-                    df[DTTM_ALIAS] = pd.to_datetime(
-                        df[DTTM_ALIAS], utc=False, format=timestamp_format
-                    )
-                if self.datasource.offset:
-                    df[DTTM_ALIAS] += timedelta(hours=self.datasource.offset)
-                df[DTTM_ALIAS] += query_object.time_shift
+            df = utils.normalize_dttm_col(
+                df=df,
+                timestamp_format=timestamp_format,
+                offset=self.datasource.offset,
+                time_shift=query_object.time_shift,
+            )
 
             if self.enforce_numerical_metrics:
                 self.df_metrics_to_num(df, query_object)
@@ -123,17 +132,15 @@ class QueryContext:
         }
 
     @staticmethod
-    def df_metrics_to_num(  # pylint: disable=no-self-use
-        df: pd.DataFrame, query_object: QueryObject
-    ) -> None:
+    def df_metrics_to_num(df: pd.DataFrame, query_object: QueryObject) -> None:
         """Converting metrics to numeric when pandas.read_sql cannot"""
         for col, dtype in df.dtypes.items():
-            if dtype.type == np.object_ and col in query_object.metrics:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+            if dtype.type == np.object_ and col in query_object.metric_names:
+                # soft-convert a metric column to numeric
+                # will stay as strings if conversion fails
+                df[col] = df[col].infer_objects()
 
-    def get_data(
-        self, df: pd.DataFrame,
-    ) -> Union[str, List[Dict[str, Any]]]:  # pylint: disable=no-self-use
+    def get_data(self, df: pd.DataFrame,) -> Union[str, List[Dict[str, Any]]]:
         if self.result_format == utils.ChartDataResultFormat.CSV:
             include_index = not isinstance(df.index, pd.RangeIndex)
             result = df.to_csv(index=include_index, **config["CSV_EXPORT"])
@@ -141,35 +148,84 @@ class QueryContext:
 
         return df.to_dict(orient="records")
 
-    def get_single_payload(self, query_obj: QueryObject) -> Dict[str, Any]:
-        """Returns a payload of metadata and data"""
+    def get_single_payload(
+        self, query_obj: QueryObject, force_cached: Optional[bool] = False,
+    ) -> Dict[str, Any]:
+        """Return results payload for a single quey"""
         if self.result_type == utils.ChartDataResultType.QUERY:
             return {
                 "query": self.datasource.get_query_str(query_obj.to_dict()),
                 "language": self.datasource.query_language,
             }
+
         if self.result_type == utils.ChartDataResultType.SAMPLES:
             row_limit = query_obj.row_limit or math.inf
             query_obj = copy.copy(query_obj)
+            query_obj.is_timeseries = False
+            query_obj.orderby = []
             query_obj.groupby = []
             query_obj.metrics = []
             query_obj.post_processing = []
             query_obj.row_limit = min(row_limit, config["SAMPLES_ROW_LIMIT"])
             query_obj.row_offset = 0
             query_obj.columns = [o.column_name for o in self.datasource.columns]
-        payload = self.get_df_payload(query_obj)
+
+        payload = self.get_df_payload(query_obj, force_cached=force_cached)
         df = payload["df"]
         status = payload["status"]
         if status != utils.QueryStatus.FAILED:
+            payload["colnames"] = list(df.columns)
+            payload["coltypes"] = utils.extract_dataframe_dtypes(df)
             payload["data"] = self.get_data(df)
         del payload["df"]
-        if self.result_type == utils.ChartDataResultType.RESULTS:
+
+        filters = query_obj.filter
+        filter_columns = cast(List[str], [flt.get("col") for flt in filters])
+        columns = set(self.datasource.column_names)
+        applied_time_columns, rejected_time_columns = utils.get_time_filter_status(
+            self.datasource, query_obj.applied_time_extras
+        )
+        payload["applied_filters"] = [
+            {"column": col} for col in filter_columns if col in columns
+        ] + applied_time_columns
+        payload["rejected_filters"] = [
+            {"reason": "not_in_datasource", "column": col}
+            for col in filter_columns
+            if col not in columns
+        ] + rejected_time_columns
+
+        if (
+            self.result_type == utils.ChartDataResultType.RESULTS
+            and status != utils.QueryStatus.FAILED
+        ):
             return {"data": payload["data"]}
         return payload
 
-    def get_payload(self) -> List[Dict[str, Any]]:
-        """Get all the payloads from the QueryObjects"""
-        return [self.get_single_payload(query_object) for query_object in self.queries]
+    def get_payload(
+        self,
+        cache_query_context: Optional[bool] = False,
+        force_cached: Optional[bool] = False,
+    ) -> Dict[str, Any]:
+        """Returns the query results with both metadata and data"""
+
+        # Get all the payloads from the QueryObjects
+        query_results = [
+            self.get_single_payload(query_object, force_cached=force_cached)
+            for query_object in self.queries
+        ]
+        return_value = {"queries": query_results}
+
+        if cache_query_context:
+            cache_key = self.cache_key()
+            set_and_log_cache(
+                cache_manager.cache,
+                cache_key,
+                {"data": self.cache_values},
+                self.cache_timeout,
+            )
+            return_value["cache_key"] = cache_key  # type: ignore
+
+        return return_value
 
     @property
     def cache_timeout(self) -> int:
@@ -184,7 +240,22 @@ class QueryContext:
             return self.datasource.database.cache_timeout
         return config["CACHE_DEFAULT_TIMEOUT"]
 
-    def cache_key(self, query_obj: QueryObject, **kwargs: Any) -> Optional[str]:
+    def cache_key(self, **extra: Any) -> str:
+        """
+        The QueryContext cache key is made out of the key/values from
+        self.cached_values, plus any other key/values in `extra`. It includes only data
+        required to rehydrate a QueryContext object.
+        """
+        key_prefix = "qc-"
+        cache_dict = self.cache_values.copy()
+        cache_dict.update(extra)
+
+        return generate_cache_key(cache_dict, key_prefix)
+
+    def query_cache_key(self, query_obj: QueryObject, **kwargs: Any) -> Optional[str]:
+        """
+        Returns a QueryObject cache key for objects in self.queries
+        """
         extra_cache_keys = self.datasource.get_extra_cache_keys(query_obj.to_dict())
 
         cache_key = (
@@ -192,47 +263,126 @@ class QueryContext:
                 datasource=self.datasource.uid,
                 extra_cache_keys=extra_cache_keys,
                 rls=security_manager.get_rls_ids(self.datasource)
-                if config["ENABLE_ROW_LEVEL_SECURITY"]
+                if is_feature_enabled("ROW_LEVEL_SECURITY")
                 and self.datasource.is_rls_supported
                 else [],
                 changed_on=self.datasource.changed_on,
-                **kwargs
+                **kwargs,
             )
             if query_obj
             else None
         )
         return cache_key
 
-    def get_df_payload(  # pylint: disable=too-many-locals,too-many-statements
-        self, query_obj: QueryObject, **kwargs: Any
+    @staticmethod
+    def get_native_annotation_data(query_obj: QueryObject) -> Dict[str, Any]:
+        annotation_data = {}
+        annotation_layers = [
+            layer
+            for layer in query_obj.annotation_layers
+            if layer["sourceType"] == "NATIVE"
+        ]
+        layer_ids = [layer["value"] for layer in annotation_layers]
+        layer_objects = {
+            layer_object.id: layer_object
+            for layer_object in AnnotationLayerDAO.find_by_ids(layer_ids)
+        }
+
+        # annotations
+        for layer in annotation_layers:
+            layer_id = layer["value"]
+            layer_name = layer["name"]
+            columns = [
+                "start_dttm",
+                "end_dttm",
+                "short_descr",
+                "long_descr",
+                "json_metadata",
+            ]
+            layer_object = layer_objects[layer_id]
+            records = [
+                {column: getattr(annotation, column) for column in columns}
+                for annotation in layer_object.annotation
+            ]
+            result = {"columns": columns, "records": records}
+            annotation_data[layer_name] = result
+        return annotation_data
+
+    @staticmethod
+    def get_viz_annotation_data(
+        annotation_layer: Dict[str, Any], force: bool
+    ) -> Dict[str, Any]:
+        chart = ChartDAO.find_by_id(annotation_layer["value"])
+        form_data = chart.form_data.copy()
+        if not chart:
+            raise QueryObjectValidationError(_("The chart does not exist"))
+        try:
+            viz_obj = get_viz(
+                datasource_type=chart.datasource.type,
+                datasource_id=chart.datasource.id,
+                form_data=form_data,
+                force=force,
+            )
+            payload = viz_obj.get_payload()
+            return payload["data"]
+        except SupersetException as ex:
+            raise QueryObjectValidationError(utils.error_msg_from_exception(ex))
+
+    def get_annotation_data(self, query_obj: QueryObject) -> Dict[str, Any]:
+        """
+
+        :param query_obj:
+        :return:
+        """
+        annotation_data: Dict[str, Any] = self.get_native_annotation_data(query_obj)
+        for annotation_layer in [
+            layer
+            for layer in query_obj.annotation_layers
+            if layer["sourceType"] in ("line", "table")
+        ]:
+            name = annotation_layer["name"]
+            annotation_data[name] = self.get_viz_annotation_data(
+                annotation_layer, self.force
+            )
+        return annotation_data
+
+    def get_df_payload(  # pylint: disable=too-many-statements,too-many-locals
+        self, query_obj: QueryObject, force_cached: Optional[bool] = False,
     ) -> Dict[str, Any]:
         """Handles caching around the df payload retrieval"""
-        cache_key = self.cache_key(query_obj, **kwargs)
+        cache_key = self.query_cache_key(query_obj)
         logger.info("Cache key: %s", cache_key)
         is_loaded = False
         stacktrace = None
         df = pd.DataFrame()
-        cached_dttm = datetime.utcnow().isoformat().split(".")[0]
         cache_value = None
         status = None
         query = ""
+        annotation_data = {}
         error_message = None
-        if cache_key and cache and not self.force:
-            cache_value = cache.get(cache_key)
+        if cache_key and cache_manager.data_cache and not self.force:
+            cache_value = cache_manager.data_cache.get(cache_key)
             if cache_value:
                 stats_logger.incr("loading_from_cache")
                 try:
                     df = cache_value["df"]
                     query = cache_value["query"]
+                    annotation_data = cache_value.get("annotation_data", {})
                     status = utils.QueryStatus.SUCCESS
                     is_loaded = True
                     stats_logger.incr("loaded_from_cache")
-                except Exception as ex:  # pylint: disable=broad-except
+                except KeyError as ex:
                     logger.exception(ex)
                     logger.error(
                         "Error reading cache: %s", utils.error_msg_from_exception(ex)
                     )
                 logger.info("Serving from cache")
+
+        if force_cached and not is_loaded:
+            logger.warning(
+                "force_cached (QueryContext): value not found for key %s", cache_key
+            )
+            raise CacheLoadError("Error loading data from cache")
 
         if query_obj and not is_loaded:
             try:
@@ -240,9 +390,8 @@ class QueryContext:
                     col
                     for col in query_obj.columns
                     + query_obj.groupby
-                    + [flt["col"] for flt in query_obj.filter]
                     + utils.get_column_names_from_metrics(query_obj.metrics)
-                    if col not in self.datasource.column_names
+                    if col not in self.datasource.column_names and col != DTTM_ALIAS
                 ]
                 if invalid_columns:
                     raise QueryObjectValidationError(
@@ -256,6 +405,8 @@ class QueryContext:
                 query = query_result["query"]
                 error_message = query_result["error_message"]
                 df = query_result["df"]
+                annotation_data = self.get_annotation_data(query_obj)
+
                 if status != utils.QueryStatus.FAILED:
                     stats_logger.incr("loaded_from_source")
                     if not self.force:
@@ -271,24 +422,22 @@ class QueryContext:
                 status = utils.QueryStatus.FAILED
                 stacktrace = utils.get_stacktrace()
 
-            if is_loaded and cache_key and cache and status != utils.QueryStatus.FAILED:
-                try:
-                    cache_value = dict(dttm=cached_dttm, df=df, query=query)
-                    stats_logger.incr("set_cache_key")
-                    cache.set(cache_key, cache_value, timeout=self.cache_timeout)
-                except Exception as ex:  # pylint: disable=broad-except
-                    # cache.set call can fail if the backend is down or if
-                    # the key is too large or whatever other reasons
-                    logger.warning("Could not cache key %s", cache_key)
-                    logger.exception(ex)
-                    cache.delete(cache_key)
+            if is_loaded and cache_key and status != utils.QueryStatus.FAILED:
+                set_and_log_cache(
+                    cache_manager.data_cache,
+                    cache_key,
+                    {"df": df, "query": query, "annotation_data": annotation_data},
+                    self.cache_timeout,
+                    self.datasource.uid,
+                )
         return {
             "cache_key": cache_key,
             "cached_dttm": cache_value["dttm"] if cache_value is not None else None,
             "cache_timeout": self.cache_timeout,
             "df": df,
+            "annotation_data": annotation_data,
             "error": error_message,
-            "is_cached": cache_key is not None,
+            "is_cached": cache_value is not None,
             "query": query,
             "status": status,
             "stacktrace": stacktrace,
@@ -301,5 +450,6 @@ class QueryContext:
 
         :raises SupersetSecurityException: If the user cannot access the resource
         """
-
+        for query in self.queries:
+            query.validate()
         security_manager.raise_for_access(query_context=self)

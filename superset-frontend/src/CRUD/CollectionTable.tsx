@@ -18,8 +18,8 @@
  */
 import React, { ReactNode } from 'react';
 import shortid from 'shortid';
-import { t } from '@superset-ui/translation';
-import Button from '../components/Button';
+import { t, styled } from '@superset-ui/core';
+import Button from 'src/components/Button';
 import Fieldset from './Fieldset';
 import { recurseReactClone } from './utils';
 import './crud.less';
@@ -29,9 +29,9 @@ interface CRUDCollectionProps {
   allowDeletes?: boolean;
   collection: Array<object>;
   columnLabels?: object;
-  emptyMessage: ReactNode;
-  expandFieldset: ReactNode;
-  extraButtons: ReactNode;
+  emptyMessage?: ReactNode;
+  expandFieldset?: ReactNode;
+  extraButtons?: ReactNode;
   itemGenerator?: () => any;
   itemRenderers?: ((
     val: unknown,
@@ -41,6 +41,7 @@ interface CRUDCollectionProps {
   ) => ReactNode)[];
   onChange?: (arg0: any) => void;
   tableColumns: Array<any>;
+  stickyHeader?: boolean;
 }
 
 interface CRUDCollectionState {
@@ -60,6 +61,27 @@ function createKeyedCollection(arr: Array<object>) {
   return map;
 }
 
+const CrudTableWrapper = styled.div<{ stickyHeader?: boolean }>`
+  ${({ stickyHeader }) =>
+    stickyHeader &&
+    `
+      height: 350px;
+      overflow: auto;
+
+      thead th {
+        background: #fff;
+        position: sticky;
+        top: 0;
+        z-index: 9;
+      }
+    `}
+`;
+
+const CrudButtonWrapper = styled.div`
+  text-align: right;
+  ${({ theme }) => `margin-bottom: ${theme.gridUnit * 2}px`}
+`;
+
 export default class CRUDCollection extends React.PureComponent<
   CRUDCollectionProps,
   CRUDCollectionState
@@ -78,6 +100,7 @@ export default class CRUDCollection extends React.PureComponent<
     this.renderTableBody = this.renderTableBody.bind(this);
     this.changeCollection = this.changeCollection.bind(this);
   }
+
   UNSAFE_componentWillReceiveProps(nextProps: CRUDCollectionProps) {
     if (nextProps.collection !== this.props.collection) {
       this.setState({
@@ -85,6 +108,7 @@ export default class CRUDCollection extends React.PureComponent<
       });
     }
   }
+
   onCellChange(id: number, col: string, val: boolean) {
     this.changeCollection({
       ...this.state.collection,
@@ -94,6 +118,7 @@ export default class CRUDCollection extends React.PureComponent<
       },
     });
   }
+
   onAddItem() {
     if (this.props.itemGenerator) {
       let newItem = this.props.itemGenerator();
@@ -106,12 +131,14 @@ export default class CRUDCollection extends React.PureComponent<
       });
     }
   }
+
   onFieldsetChange(item: any) {
     this.changeCollection({
       ...this.state.collection,
       [item.id]: item,
     });
   }
+
   getLabel(col: any) {
     const { columnLabels } = this.props;
     let label = columnLabels && columnLabels[col] ? columnLabels[col] : col;
@@ -121,17 +148,20 @@ export default class CRUDCollection extends React.PureComponent<
     }
     return label;
   }
+
   changeCollection(collection: any) {
     this.setState({ collection });
     if (this.props.onChange) {
       this.props.onChange(Object.keys(collection).map(k => collection[k]));
     }
   }
+
   deleteItem(id: number) {
     const newColl = { ...this.state.collection };
     delete newColl[id];
     this.changeCollection(newColl);
   }
+
   effectiveTableColumns() {
     const { tableColumns, allowDeletes, expandFieldset } = this.props;
     const cols = allowDeletes
@@ -139,43 +169,36 @@ export default class CRUDCollection extends React.PureComponent<
       : tableColumns;
     return expandFieldset ? ['__expand'].concat(cols) : cols;
   }
+
   toggleExpand(id: any) {
     this.onCellChange(id, '__expanded', false);
-    this.setState({
+    this.setState(prevState => ({
       expandedColumns: {
-        ...this.state.expandedColumns,
-        [id]: !this.state.expandedColumns[id],
+        ...prevState.expandedColumns,
+        [id]: !prevState.expandedColumns[id],
       },
-    });
+    }));
   }
+
   renderHeaderRow() {
     const cols = this.effectiveTableColumns();
-    const {
-      allowAddItem,
-      allowDeletes,
-      expandFieldset,
-      extraButtons,
-    } = this.props;
+    const { allowDeletes, expandFieldset, extraButtons } = this.props;
     return (
       <thead>
         <tr>
-          {expandFieldset && <th className="tiny-cell" />}
+          {expandFieldset && <th aria-label="Expand" className="tiny-cell" />}
           {cols.map(col => (
             <th key={col}>{this.getLabel(col)}</th>
           ))}
           {extraButtons}
-          {allowDeletes && !allowAddItem && <th className="tiny-cell" />}
-          {allowAddItem && (
-            <th>
-              <Button bsStyle="primary" onClick={this.onAddItem}>
-                <i className="fa fa-plus" /> {t('Add Item')}
-              </Button>
-            </th>
+          {allowDeletes && (
+            <th key="delete-item" aria-label="Delete" className="tiny-cell" />
           )}
         </tr>
       </thead>
     );
   }
+
   renderExpandableSection(item: any) {
     const propsGenerator = () => ({ item, onChange: this.onFieldsetChange });
     return recurseReactClone(
@@ -184,12 +207,14 @@ export default class CRUDCollection extends React.PureComponent<
       propsGenerator,
     );
   }
+
   renderCell(record: any, col: any) {
     const renderer = this.props.itemRenderers && this.props.itemRenderers[col];
     const val = record[col];
     const onChange = this.onCellChange.bind(this, record.id, col);
     return renderer ? renderer(val, onChange, this.getLabel(col), record) : val;
   }
+
   renderItem(record: any) {
     const {
       allowAddItem,
@@ -206,6 +231,7 @@ export default class CRUDCollection extends React.PureComponent<
         <td key="__expand" className="expand">
           <i
             role="button"
+            aria-label="Toggle expand"
             tabIndex={0}
             className={`fa fa-caret-${
               isExpanded ? 'down' : 'right'
@@ -221,13 +247,15 @@ export default class CRUDCollection extends React.PureComponent<
       )),
     );
     if (allowAddItem) {
-      tds.push(<td />);
+      tds.push(<td key="add" />);
     }
     if (allowDeletes) {
       tds.push(
-        <td key="__actions">
+        <td key="__actions" data-test="crud-delete-option">
           <i
+            {...{ 'data-test': 'crud-delete-icon' }}
             role="button"
+            aria-label="Delete item"
             tabIndex={0}
             className="fa fa-trash text-primary pointer"
             onClick={this.deleteItem.bind(this, record.id)}
@@ -236,7 +264,7 @@ export default class CRUDCollection extends React.PureComponent<
       );
     }
     const trs = [
-      <tr className="row" key={record.id}>
+      <tr {...{ 'data-test': 'table-row' }} className="row" key={record.id}>
         {tds}
       </tr>,
     ];
@@ -254,6 +282,7 @@ export default class CRUDCollection extends React.PureComponent<
     }
     return trs;
   }
+
   renderEmptyCell() {
     return (
       <tr>
@@ -261,6 +290,7 @@ export default class CRUDCollection extends React.PureComponent<
       </tr>
     );
   }
+
   renderTableBody() {
     const data = Object.keys(this.state.collection).map(
       k => this.state.collection[k],
@@ -268,16 +298,37 @@ export default class CRUDCollection extends React.PureComponent<
     const content = data.length
       ? data.map(d => this.renderItem(d))
       : this.renderEmptyCell();
-    return <tbody>{content}</tbody>;
+    return <tbody data-test="table-content-rows">{content}</tbody>;
   }
+
   render() {
     return (
-      <div className="CRUD">
-        <table className="table">
-          {this.renderHeaderRow()}
-          {this.renderTableBody()}
-        </table>
-      </div>
+      <>
+        <CrudButtonWrapper>
+          {this.props.allowAddItem && (
+            <span className="m-t-10 m-r-10">
+              <Button
+                buttonSize="small"
+                buttonStyle="primary"
+                onClick={this.onAddItem}
+                data-test="add-item-button"
+              >
+                <i data-test="crud-add-table-item" className="fa fa-plus" />{' '}
+                {t('Add item')}
+              </Button>
+            </span>
+          )}
+        </CrudButtonWrapper>
+        <CrudTableWrapper
+          className="CRUD"
+          stickyHeader={this.props.stickyHeader}
+        >
+          <table data-test="crud-table" className="table">
+            {this.renderHeaderRow()}
+            {this.renderTableBody()}
+          </table>
+        </CrudTableWrapper>
+      </>
     );
   }
 }

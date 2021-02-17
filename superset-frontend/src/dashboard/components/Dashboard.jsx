@@ -18,8 +18,10 @@
  */
 import React from 'react';
 import PropTypes from 'prop-types';
-import { t } from '@superset-ui/translation';
+import { t } from '@superset-ui/core';
 
+import { PluginContext } from 'src/components/DynamicPlugins';
+import Loading from 'src/components/Loading';
 import getChartIdsFromLayout from '../util/getChartIdsFromLayout';
 import getLayoutComponentFromChartId from '../util/getLayoutComponentFromChartId';
 import DashboardBuilder from '../containers/DashboardBuilder';
@@ -68,7 +70,8 @@ const defaultProps = {
 };
 
 class Dashboard extends React.PureComponent {
-  // eslint-disable-next-line react/sort-comp
+  static contextType = PluginContext;
+
   static onBeforeUnload(hasChanged) {
     if (hasChanged) {
       window.addEventListener('beforeunload', Dashboard.unload);
@@ -86,7 +89,6 @@ class Dashboard extends React.PureComponent {
   constructor(props) {
     super(props);
     this.appliedFilters = props.activeFilters || {};
-
     this.onVisibilityChange = this.onVisibilityChange.bind(this);
   }
 
@@ -145,9 +147,8 @@ class Dashboard extends React.PureComponent {
   componentDidUpdate() {
     const { hasUnsavedChanges, editMode } = this.props.dashboardState;
 
-    const appliedFilters = this.appliedFilters;
+    const { appliedFilters } = this;
     const { activeFilters } = this.props;
-    // do not apply filter when dashboard in edit mode
     if (!editMode && !areObjectsEqual(appliedFilters, activeFilters)) {
       this.applyFilters();
     }
@@ -186,7 +187,7 @@ class Dashboard extends React.PureComponent {
   }
 
   applyFilters() {
-    const appliedFilters = this.appliedFilters;
+    const { appliedFilters } = this;
     const { activeFilters } = this.props;
 
     // refresh charts if a filter was removed, added, or changed
@@ -242,6 +243,9 @@ class Dashboard extends React.PureComponent {
   }
 
   render() {
+    if (this.context.loading) {
+      return <Loading />;
+    }
     return (
       <>
         <OmniContainer logEvent={this.props.actions.logEvent} />

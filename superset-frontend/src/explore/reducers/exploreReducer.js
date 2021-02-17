@@ -17,6 +17,7 @@
  * under the License.
  */
 /* eslint camelcase: 0 */
+import { DYNAMIC_PLUGIN_CONTROLS_READY } from 'src/chart/chartAction';
 import { getControlsState } from '../store';
 import {
   getControlConfig,
@@ -27,6 +28,12 @@ import * as actions from '../actions/exploreActions';
 
 export default function exploreReducer(state = {}, action) {
   const actionHandlers = {
+    [DYNAMIC_PLUGIN_CONTROLS_READY]() {
+      return {
+        ...state,
+        controls: action.controlsState,
+      };
+    },
     [actions.TOGGLE_FAVE_STAR]() {
       return {
         ...state,
@@ -72,19 +79,6 @@ export default function exploreReducer(state = {}, action) {
         isDatasourcesLoading: true,
       };
     },
-    [actions.FETCH_DATASOURCES_SUCCEEDED]() {
-      return {
-        ...state,
-        isDatasourcesLoading: false,
-      };
-    },
-    [actions.FETCH_DATASOURCES_FAILED]() {
-      return {
-        ...state,
-        isDatasourcesLoading: false,
-        controlPanelAlert: action.error,
-      };
-    },
     [actions.SET_DATASOURCES]() {
       return {
         ...state,
@@ -127,12 +121,25 @@ export default function exploreReducer(state = {}, action) {
       });
       const hasErrors = errors && errors.length > 0;
 
+      const currentControlsState =
+        action.controlName === 'viz_type' &&
+        action.value !== state.controls.viz_type.value
+          ? // rebuild the full control state if switching viz type
+            getControlsState(
+              state,
+              getFormDataFromControls({
+                ...state.controls,
+                viz_type: control,
+              }),
+            )
+          : state.controls;
+
       return {
         ...state,
         form_data: new_form_data,
         triggerRender: control.renderTrigger && !hasErrors,
         controls: {
-          ...state.controls,
+          ...currentControlsState,
           [action.controlName]: {
             ...control,
             validationErrors: errors,
@@ -152,15 +159,6 @@ export default function exploreReducer(state = {}, action) {
         sliceName: action.sliceName,
       };
     },
-    [actions.RESET_FIELDS]() {
-      return {
-        ...state,
-        controls: getControlsState(
-          state,
-          getFormDataFromControls(state.controls),
-        ),
-      };
-    },
     [actions.CREATE_NEW_SLICE]() {
       return {
         ...state,
@@ -178,6 +176,7 @@ export default function exploreReducer(state = {}, action) {
           ...state.slice,
           ...action.slice,
         },
+        sliceName: action.slice.slice_name ?? state.sliceName,
       };
     },
   };

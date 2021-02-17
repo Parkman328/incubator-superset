@@ -25,7 +25,7 @@ from superset.db_engine_specs.base import BaseEngineSpec, LimitMethod
 from superset.utils import core as utils
 
 if TYPE_CHECKING:
-    from superset.models.core import Database  # pylint: disable=unused-import
+    from superset.models.core import Database
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +62,17 @@ class MssqlEngineSpec(BaseEngineSpec):
         if tt == utils.TemporalType.DATE:
             return f"CONVERT(DATE, '{dttm.date().isoformat()}', 23)"
         if tt == utils.TemporalType.DATETIME:
-            return f"""CONVERT(DATETIME, '{dttm.isoformat(timespec="milliseconds")}', 126)"""  # pylint: disable=line-too-long
+            datetime_formatted = dttm.isoformat(timespec="milliseconds")
+            return f"""CONVERT(DATETIME, '{datetime_formatted}', 126)"""
         if tt == utils.TemporalType.SMALLDATETIME:
-            return f"""CONVERT(SMALLDATETIME, '{dttm.isoformat(sep=" ", timespec="seconds")}', 20)"""  # pylint: disable=line-too-long
+            datetime_formatted = dttm.isoformat(sep=" ", timespec="seconds")
+            return f"""CONVERT(SMALLDATETIME, '{datetime_formatted}', 20)"""
         return None
 
     @classmethod
-    def fetch_data(cls, cursor: Any, limit: int) -> List[Tuple[Any, ...]]:
+    def fetch_data(
+        cls, cursor: Any, limit: Optional[int] = None
+    ) -> List[Tuple[Any, ...]]:
         data = super().fetch_data(cursor, limit)
         # Lists of `pyodbc.Row` need to be unpacked further
         return cls.pyodbc_rows_to_tuples(data)

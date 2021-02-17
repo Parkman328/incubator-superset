@@ -19,8 +19,7 @@
 import { snakeCase } from 'lodash';
 import PropTypes from 'prop-types';
 import React from 'react';
-import { SuperChart } from '@superset-ui/chart';
-import { logging } from '@superset-ui/core';
+import { SuperChart, logging } from '@superset-ui/core';
 import { Logger, LOG_ACTIONS_RENDER_CHART } from '../logger/LogUtils';
 
 const propTypes = {
@@ -38,11 +37,12 @@ const propTypes = {
   // state
   chartAlert: PropTypes.string,
   chartStatus: PropTypes.string,
-  queryResponse: PropTypes.object,
+  queriesResponse: PropTypes.arrayOf(PropTypes.object),
   triggerQuery: PropTypes.bool,
   refreshOverlayVisible: PropTypes.bool,
   // dashboard callbacks
   addFilter: PropTypes.func,
+  setExtraFormData: PropTypes.func,
   onFilterMenuOpen: PropTypes.func,
   onFilterMenuClose: PropTypes.func,
 };
@@ -74,19 +74,21 @@ class ChartRenderer extends React.Component {
       setControlValue: this.handleSetControlValue,
       onFilterMenuOpen: this.props.onFilterMenuOpen,
       onFilterMenuClose: this.props.onFilterMenuClose,
+      setExtraFormData: extraFormData =>
+        this.props.actions?.setExtraFormData(this.props.chartId, extraFormData),
     };
   }
 
   shouldComponentUpdate(nextProps) {
     const resultsReady =
-      nextProps.queryResponse &&
+      nextProps.queriesResponse &&
       ['success', 'rendered'].indexOf(nextProps.chartStatus) > -1 &&
-      !nextProps.queryResponse.error &&
+      !nextProps.queriesResponse?.[0]?.error &&
       !nextProps.refreshOverlayVisible;
 
     if (resultsReady) {
       this.hasQueryResponseChange =
-        nextProps.queryResponse !== this.props.queryResponse;
+        nextProps.queriesResponse !== this.props.queriesResponse;
       return (
         this.hasQueryResponseChange ||
         nextProps.annotationData !== this.props.annotationData ||
@@ -180,7 +182,7 @@ class ChartRenderer extends React.Component {
       datasource,
       initialValues,
       formData,
-      queryResponse,
+      queriesResponse,
     } = this.props;
 
     // It's bad practice to use unprefixed `vizType` as classnames for chart
@@ -219,7 +221,7 @@ class ChartRenderer extends React.Component {
         initialValues={initialValues}
         formData={formData}
         hooks={this.hooks}
-        queryData={queryResponse}
+        queriesData={queriesResponse}
         onRenderSuccess={this.handleRenderSuccess}
         onRenderFailure={this.handleRenderFailure}
       />

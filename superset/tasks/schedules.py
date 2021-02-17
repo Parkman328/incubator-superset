@@ -14,8 +14,11 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
-"""Utility functions used across Superset"""
+"""
+DEPRECATION NOTICE: this module is deprecated as of v1.0.0.
+It will be removed in future versions of Superset. Please
+migrate to the new scheduler: `superset.tasks.scheduler`.
+"""
 
 import logging
 import time
@@ -34,10 +37,9 @@ from typing import (
     TYPE_CHECKING,
     Union,
 )
-from urllib.error import URLError  # pylint: disable=ungrouped-imports
+from urllib.error import URLError
 
 import croniter
-import pandas as pd
 import simplejson as json
 from celery.app.task import Task
 from dateutil.tz import tzlocal
@@ -47,12 +49,13 @@ from retry.api import retry_call
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver import chrome, firefox
 from selenium.webdriver.remote.webdriver import WebDriver
+from sqlalchemy import func
 from sqlalchemy.exc import NoSuchColumnError, ResourceClosedError
+from sqlalchemy.orm import Session
 
-from superset import app, db, security_manager, thumbnail_cache
+from superset import app, security_manager, thumbnail_cache
 from superset.extensions import celery_app, machine_auth_provider_factory
 from superset.models.alerts import Alert, AlertLog
-from superset.models.core import Database
 from superset.models.dashboard import Dashboard
 from superset.models.schedules import (
     EmailDeliveryType,
@@ -61,8 +64,10 @@ from superset.models.schedules import (
     SliceEmailReportFormat,
 )
 from superset.models.slice import Slice
-from superset.sql_parse import ParsedQuery
+from superset.tasks.alerts.observer import observe
+from superset.tasks.alerts.validator import get_validator_function
 from superset.tasks.slack_util import deliver_slack_msg
+from superset.utils.celery import session_scope
 from superset.utils.core import get_email_address_list, send_email_smtp
 from superset.utils.screenshots import ChartScreenshot, WebDriverProxy
 from superset.utils.urls import get_url_path
@@ -70,10 +75,8 @@ from superset.utils.urls import get_url_path
 # pylint: disable=too-few-public-methods
 
 if TYPE_CHECKING:
-    # pylint: disable=unused-import
-    from werkzeug.datastructures import TypeConversionDict
     from flask_appbuilder.security.sqla.models import User
-
+    from werkzeug.datastructures import TypeConversionDict
 
 # Globals
 config = app.config
@@ -106,6 +109,8 @@ class ScreenshotData(NamedTuple):
 class AlertContent(NamedTuple):
     label: str  # alert name
     sql: str  # sql statement for alert
+    observation_value: str  # value from observation that triggered the alert
+    validation_error_message: str  # a string of the comparison that triggered an alert
     alert_url: str  # url to alert details
     image_data: Optional[ScreenshotData]  # data for the alert screenshot
 
@@ -198,12 +203,21 @@ def _get_url_path(view: str, user_friendly: bool = False, **kwargs: Any) -> str:
         return urllib.parse.urljoin(str(base_url), url_for(view, **kwargs))
 
 
-def create_webdriver() -> WebDriver:
-    return WebDriverProxy(driver_type=config["WEBDRIVER_TYPE"]).auth(get_reports_user())
+def create_webdriver(session: Session) -> WebDriver:
+    return WebDriverProxy(driver_type=config["WEBDRIVER_TYPE"]).auth(
+        get_reports_user(session)
+    )
 
 
-def get_reports_user() -> "User":
-    return security_manager.find_user(config["EMAIL_REPORTS_USER"])
+def get_reports_user(session: Session) -> "User":
+    return (
+        session.query(security_manager.user_model)
+        .filter(
+            func.lower(security_manager.user_model.username)
+            == func.lower(config["EMAIL_REPORTS_USER"])
+        )
+        .one()
+    )
 
 
 def destroy_webdriver(
@@ -225,7 +239,7 @@ def destroy_webdriver(
         pass
 
 
-def deliver_dashboard(
+def deliver_dashboard(  # pylint: disable=too-many-locals
     dashboard_id: int,
     recipients: Optional[str],
     slack_channel: Optional[str],
@@ -236,71 +250,74 @@ def deliver_dashboard(
     """
     Given a schedule, delivery the dashboard as an email report
     """
-    dashboard = db.session.query(Dashboard).filter_by(id=dashboard_id).one()
+    with session_scope(nullpool=True) as session:
+        dashboard = session.query(Dashboard).filter_by(id=dashboard_id).one()
 
-    dashboard_url = _get_url_path(
-        "Superset.dashboard", dashboard_id_or_slug=dashboard.id
-    )
-    dashboard_url_user_friendly = _get_url_path(
-        "Superset.dashboard", user_friendly=True, dashboard_id_or_slug=dashboard.id
-    )
-
-    # Create a driver, fetch the page, wait for the page to render
-    driver = create_webdriver()
-    window = config["WEBDRIVER_WINDOW"]["dashboard"]
-    driver.set_window_size(*window)
-    driver.get(dashboard_url)
-    time.sleep(EMAIL_PAGE_RENDER_WAIT)
-
-    # Set up a function to retry once for the element.
-    # This is buggy in certain selenium versions with firefox driver
-    get_element = getattr(driver, "find_element_by_class_name")
-    element = retry_call(
-        get_element, fargs=["grid-container"], tries=2, delay=EMAIL_PAGE_RENDER_WAIT
-    )
-
-    try:
-        screenshot = element.screenshot_as_png
-    except WebDriverException:
-        # Some webdrivers do not support screenshots for elements.
-        # In such cases, take a screenshot of the entire page.
-        screenshot = driver.screenshot()  # pylint: disable=no-member
-    finally:
-        destroy_webdriver(driver)
-
-    # Generate the email body and attachments
-    report_content = _generate_report_content(
-        delivery_type,
-        screenshot,
-        dashboard.dashboard_title,
-        dashboard_url_user_friendly,
-    )
-
-    subject = __(
-        "%(prefix)s %(title)s",
-        prefix=config["EMAIL_REPORTS_SUBJECT_PREFIX"],
-        title=dashboard.dashboard_title,
-    )
-
-    if recipients:
-        _deliver_email(
-            recipients,
-            deliver_as_group,
-            subject,
-            report_content.body,
-            report_content.data,
-            report_content.images,
+        dashboard_url = _get_url_path(
+            "Superset.dashboard", dashboard_id_or_slug=dashboard.id
         )
-    if slack_channel:
-        deliver_slack_msg(
-            slack_channel,
-            subject,
-            report_content.slack_message,
-            report_content.slack_attachment,
+        dashboard_url_user_friendly = _get_url_path(
+            "Superset.dashboard", user_friendly=True, dashboard_id_or_slug=dashboard.id
         )
 
+        # Create a driver, fetch the page, wait for the page to render
+        driver = create_webdriver(session)
+        window = config["WEBDRIVER_WINDOW"]["dashboard"]
+        driver.set_window_size(*window)
+        driver.get(dashboard_url)
+        time.sleep(EMAIL_PAGE_RENDER_WAIT)
 
-def _get_slice_data(slc: Slice, delivery_type: EmailDeliveryType) -> ReportContent:
+        # Set up a function to retry once for the element.
+        # This is buggy in certain selenium versions with firefox driver
+        get_element = getattr(driver, "find_element_by_class_name")
+        element = retry_call(
+            get_element, fargs=["grid-container"], tries=2, delay=EMAIL_PAGE_RENDER_WAIT
+        )
+
+        try:
+            screenshot = element.screenshot_as_png
+        except WebDriverException:
+            # Some webdrivers do not support screenshots for elements.
+            # In such cases, take a screenshot of the entire page.
+            screenshot = driver.screenshot()  # pylint: disable=no-member
+        finally:
+            destroy_webdriver(driver)
+
+        # Generate the email body and attachments
+        report_content = _generate_report_content(
+            delivery_type,
+            screenshot,
+            dashboard.dashboard_title,
+            dashboard_url_user_friendly,
+        )
+
+        subject = __(
+            "%(prefix)s %(title)s",
+            prefix=config["EMAIL_REPORTS_SUBJECT_PREFIX"],
+            title=dashboard.dashboard_title,
+        )
+
+        if recipients:
+            _deliver_email(
+                recipients,
+                deliver_as_group,
+                subject,
+                report_content.body,
+                report_content.data,
+                report_content.images,
+            )
+        if slack_channel:
+            deliver_slack_msg(
+                slack_channel,
+                subject,
+                report_content.slack_message,
+                report_content.slack_attachment,
+            )
+
+
+def _get_slice_data(
+    slc: Slice, delivery_type: EmailDeliveryType, session: Session
+) -> ReportContent:
     slice_url = _get_url_path(
         "Superset.explore_json", csv="true", form_data=json.dumps({"slice_id": slc.id})
     )
@@ -312,7 +329,7 @@ def _get_slice_data(slc: Slice, delivery_type: EmailDeliveryType) -> ReportConte
 
     # Login on behalf of the "reports" user in order to get cookies to deal with auth
     auth_cookies = machine_auth_provider_factory.instance.get_auth_cookies(
-        get_reports_user()
+        get_reports_user(session)
     )
     # Build something like "session=cool_sess.val;other-cookie=awesome_other_cookie"
     cookie_str = ";".join([f"{key}={val}" for key, val in auth_cookies.items()])
@@ -362,8 +379,8 @@ def _get_slice_data(slc: Slice, delivery_type: EmailDeliveryType) -> ReportConte
     return ReportContent(body, data, None, slack_message, content)
 
 
-def _get_slice_screenshot(slice_id: int) -> ScreenshotData:
-    slice_obj = db.session.query(Slice).get(slice_id)
+def _get_slice_screenshot(slice_id: int, session: Session) -> ScreenshotData:
+    slice_obj = session.query(Slice).get(slice_id)
 
     chart_url = get_url_path("Superset.slice", slice_id=slice_obj.id, standalone="true")
     screenshot = ChartScreenshot(chart_url, slice_obj.digest)
@@ -371,20 +388,22 @@ def _get_slice_screenshot(slice_id: int) -> ScreenshotData:
         "Superset.slice", user_friendly=True, slice_id=slice_obj.id,
     )
 
-    user = security_manager.find_user(current_app.config["THUMBNAIL_SELENIUM_USER"])
+    user = security_manager.get_user_by_username(
+        current_app.config["THUMBNAIL_SELENIUM_USER"], session=session
+    )
     image_data = screenshot.compute_and_cache(
         user=user, cache=thumbnail_cache, force=True,
     )
 
-    db.session.commit()
+    session.commit()
     return ScreenshotData(image_url, image_data)
 
 
 def _get_slice_visualization(
-    slc: Slice, delivery_type: EmailDeliveryType
+    slc: Slice, delivery_type: EmailDeliveryType, session: Session
 ) -> ReportContent:
     # Create a driver, fetch the page, wait for the page to render
-    driver = create_webdriver()
+    driver = create_webdriver(session)
     window = config["WEBDRIVER_WINDOW"]["slice"]
     driver.set_window_size(*window)
 
@@ -427,16 +446,17 @@ def deliver_slice(  # pylint: disable=too-many-arguments
     delivery_type: EmailDeliveryType,
     email_format: SliceEmailReportFormat,
     deliver_as_group: bool,
+    session: Session,
 ) -> None:
     """
     Given a schedule, delivery the slice as an email report
     """
-    slc = db.session.query(Slice).filter_by(id=slice_id).one()
+    slc = session.query(Slice).filter_by(id=slice_id).one()
 
     if email_format == SliceEmailReportFormat.data:
-        report_content = _get_slice_data(slc, delivery_type)
+        report_content = _get_slice_data(slc, delivery_type, session)
     elif email_format == SliceEmailReportFormat.visualization:
-        report_content = _get_slice_visualization(slc, delivery_type)
+        report_content = _get_slice_visualization(slc, delivery_type, session)
     else:
         raise RuntimeError("Unknown email report format")
 
@@ -469,69 +489,71 @@ def deliver_slice(  # pylint: disable=too-many-arguments
     bind=True,
     soft_time_limit=config["EMAIL_ASYNC_TIME_LIMIT_SEC"],
 )
-def schedule_email_report(  # pylint: disable=unused-argument
-    task: Task,
+def schedule_email_report(
+    _task: Task,
     report_type: ScheduleType,
     schedule_id: int,
     recipients: Optional[str] = None,
     slack_channel: Optional[str] = None,
 ) -> None:
     model_cls = get_scheduler_model(report_type)
-    schedule = db.create_scoped_session().query(model_cls).get(schedule_id)
+    with session_scope(nullpool=True) as session:
+        schedule = session.query(model_cls).get(schedule_id)
 
-    # The user may have disabled the schedule. If so, ignore this
-    if not schedule or not schedule.active:
-        logger.info("Ignoring deactivated schedule")
-        return
+        # The user may have disabled the schedule. If so, ignore this
+        if not schedule or not schedule.active:
+            logger.info("Ignoring deactivated schedule")
+            return
 
-    recipients = recipients or schedule.recipients
-    slack_channel = slack_channel or schedule.slack_channel
-    logger.info(
-        "Starting report for slack: %s and recipients: %s.", slack_channel, recipients
-    )
-
-    if report_type == ScheduleType.dashboard:
-        deliver_dashboard(
-            schedule.dashboard_id,
-            recipients,
+        recipients = recipients or schedule.recipients
+        slack_channel = slack_channel or schedule.slack_channel
+        logger.info(
+            "Starting report for slack: %s and recipients: %s.",
             slack_channel,
-            schedule.delivery_type,
-            schedule.deliver_as_group,
-        )
-    elif report_type == ScheduleType.slice:
-        deliver_slice(
-            schedule.slice_id,
             recipients,
-            slack_channel,
-            schedule.delivery_type,
-            schedule.email_format,
-            schedule.deliver_as_group,
         )
-    else:
-        raise RuntimeError("Unknown report type")
+
+        if report_type == ScheduleType.dashboard:
+            deliver_dashboard(
+                schedule.dashboard_id,
+                recipients,
+                slack_channel,
+                schedule.delivery_type,
+                schedule.deliver_as_group,
+            )
+        elif report_type == ScheduleType.slice:
+            deliver_slice(
+                schedule.slice_id,
+                recipients,
+                slack_channel,
+                schedule.delivery_type,
+                schedule.email_format,
+                schedule.deliver_as_group,
+                session,
+            )
+        else:
+            raise RuntimeError("Unknown report type")
 
 
 @celery_app.task(
     name="alerts.run_query",
     bind=True,
-    soft_time_limit=config["EMAIL_ASYNC_TIME_LIMIT_SEC"],
-    # TODO: find cause of https://github.com/apache/incubator-superset/issues/10530
+    # TODO: find cause of https://github.com/apache/superset/issues/10530
     # and remove retry
     autoretry_for=(NoSuchColumnError, ResourceClosedError,),
-    retry_kwargs={"max_retries": 5},
+    retry_kwargs={"max_retries": 1},
     retry_backoff=True,
 )
-def schedule_alert_query(  # pylint: disable=unused-argument
-    task: Task,
+def schedule_alert_query(
+    _task: Task,
     report_type: ScheduleType,
     schedule_id: int,
     recipients: Optional[str] = None,
     slack_channel: Optional[str] = None,
 ) -> None:
     model_cls = get_scheduler_model(report_type)
-
-    try:
-        schedule = db.session.query(model_cls).get(schedule_id)
+    with session_scope(nullpool=True) as session:
+        schedule = session.query(model_cls).get(schedule_id)
 
         # The user may have disabled the schedule. If so, ignore this
         if not schedule or not schedule.active:
@@ -539,23 +561,11 @@ def schedule_alert_query(  # pylint: disable=unused-argument
             return
 
         if report_type == ScheduleType.alert:
-            if recipients or slack_channel:
-                deliver_alert(schedule.id, recipients, slack_channel)
-                return
-
-            if run_alert_query(
-                schedule.id, schedule.database_id, schedule.sql, schedule.label
-            ):
-                # deliver_dashboard OR deliver_slice
-                return
+            evaluate_alert(
+                schedule.id, schedule.label, session, recipients, slack_channel
+            )
         else:
             raise RuntimeError("Unknown report type")
-    except NoSuchColumnError as column_error:
-        stats_logger.incr("run_alert_task.error.nosuchcolumnerror")
-        raise column_error
-    except ResourceClosedError as resource_error:
-        stats_logger.incr("run_alert_task.error.resourceclosederror")
-        raise resource_error
 
 
 class AlertState:
@@ -565,26 +575,45 @@ class AlertState:
 
 
 def deliver_alert(
-    alert_id: int, recipients: Optional[str] = None, slack_channel: Optional[str] = None
+    alert_id: int,
+    session: Session,
+    recipients: Optional[str] = None,
+    slack_channel: Optional[str] = None,
 ) -> None:
-    alert = db.session.query(Alert).get(alert_id)
+    """
+    Gathers alert information and sends out the alert
+    to its respective email and slack recipients
+    """
+
+    alert = session.query(Alert).get(alert_id)
 
     logging.info("Triggering alert: %s", alert)
+
+    # Set all the values for the alert report
+    # Alternate values are used in the case of a test alert
+    # where an alert might not have a validator
     recipients = recipients or alert.recipients
     slack_channel = slack_channel or alert.slack_channel
+    validation_error_message = (
+        str(alert.observations[-1].value) + " " + alert.pretty_config
+    )
 
     if alert.slice:
         alert_content = AlertContent(
             alert.label,
             alert.sql,
+            str(alert.observations[-1].value),
+            validation_error_message,
             _get_url_path("AlertModelView.show", user_friendly=True, pk=alert_id),
-            _get_slice_screenshot(alert.slice.id),
+            _get_slice_screenshot(alert.slice.id, session),
         )
     else:
         # TODO: dashboard delivery!
         alert_content = AlertContent(
             alert.label,
             alert.sql,
+            str(alert.observations[-1].value),
+            validation_error_message,
             _get_url_path("AlertModelView.show", user_friendly=True, pk=alert_id),
             None,
         )
@@ -596,7 +625,7 @@ def deliver_alert(
 
 
 def deliver_email_alert(alert_content: AlertContent, recipients: str) -> None:
-    # TODO add sql query results to email
+    """Delivers an email alert to the given email recipients"""
     subject = f"[Superset] Triggered alert: {alert_content.label}"
     deliver_as_group = False
     data = None
@@ -613,6 +642,8 @@ def deliver_email_alert(alert_content: AlertContent, recipients: str) -> None:
         alert_url=alert_content.alert_url,
         label=alert_content.label,
         sql=alert_content.sql,
+        observation_value=alert_content.observation_value,
+        validation_error_message=alert_content.validation_error_message,
         image_url=image_url,
     )
 
@@ -620,6 +651,8 @@ def deliver_email_alert(alert_content: AlertContent, recipients: str) -> None:
 
 
 def deliver_slack_alert(alert_content: AlertContent, slack_channel: str) -> None:
+    """Delivers a slack alert to the given slack channel"""
+
     subject = __("[Alert] %(label)s", label=alert_content.label)
 
     image = None
@@ -628,6 +661,8 @@ def deliver_slack_alert(alert_content: AlertContent, slack_channel: str) -> None
             "slack/alert.txt",
             label=alert_content.label,
             sql=alert_content.sql,
+            observation_value=alert_content.observation_value,
+            validation_error_message=alert_content.validation_error_message,
             url=alert_content.image_data.url,
             alert_url=alert_content.alert_url,
         )
@@ -637,6 +672,8 @@ def deliver_slack_alert(alert_content: AlertContent, slack_channel: str) -> None
             "slack/alert_no_screenshot.txt",
             label=alert_content.label,
             sql=alert_content.sql,
+            observation_value=alert_content.observation_value,
+            validation_error_message=alert_content.validation_error_message,
             alert_url=alert_content.alert_url,
         )
 
@@ -645,55 +682,49 @@ def deliver_slack_alert(alert_content: AlertContent, slack_channel: str) -> None
     )
 
 
-def run_alert_query(
-    alert_id: int, database_id: int, sql: str, label: str
-) -> Optional[bool]:
-    """
-    Execute alert.sql and return value if any rows are returned
-    """
+def evaluate_alert(
+    alert_id: int,
+    label: str,
+    session: Session,
+    recipients: Optional[str] = None,
+    slack_channel: Optional[str] = None,
+) -> None:
+    """Processes an alert to see if it should be triggered"""
+
     logger.info("Processing alert ID: %i", alert_id)
-    database = db.session.query(Database).get(database_id)
-    if not database:
-        logger.error("Alert database not preset")
-        return None
-
-    if not sql:
-        logger.error("Alert SQL not preset")
-        return None
-
-    parsed_query = ParsedQuery(sql)
-    sql = parsed_query.stripped()
 
     state = None
     dttm_start = datetime.utcnow()
 
-    df = pd.DataFrame()
     try:
-        logger.info("Evaluating SQL for alert <%s:%s>", alert_id, label)
-        df = database.get_df(sql)
+        logger.info("Querying observers for alert <%s:%s>", alert_id, label)
+        error_msg = observe(alert_id, session)
+        if error_msg:
+            state = AlertState.ERROR
+            logging.error(error_msg)
     except Exception as exc:  # pylint: disable=broad-except
         state = AlertState.ERROR
         logging.exception(exc)
-        logging.error("Failed at evaluating alert: %s (%s)", label, alert_id)
+        logging.error("Failed at query observers for alert: %s (%s)", label, alert_id)
 
     dttm_end = datetime.utcnow()
-    last_eval_dttm = datetime.utcnow()
 
     if state != AlertState.ERROR:
-        if not df.empty:
-            # Looking for truthy cells
-            for row in df.to_records():
-                if any(row):
-                    state = AlertState.TRIGGER
-                    deliver_alert(alert_id)
-                    break
-        if not state:
+        # Don't validate alert on test runs since it may not be triggered
+        if recipients or slack_channel:
+            deliver_alert(alert_id, session, recipients, slack_channel)
+            state = AlertState.TRIGGER
+        # Validate during regular workflow and deliver only if triggered
+        elif validate_observations(alert_id, label, session):
+            deliver_alert(alert_id, session, recipients, slack_channel)
+            state = AlertState.TRIGGER
+        else:
             state = AlertState.PASS
 
-    db.session.commit()
-    alert = db.session.query(Alert).get(alert_id)
+    session.commit()
+    alert = session.query(Alert).get(alert_id)
     if state != AlertState.ERROR:
-        alert.last_eval_dttm = last_eval_dttm
+        alert.last_eval_dttm = dttm_end
     alert.last_state = state
     alert.logs.append(
         AlertLog(
@@ -703,9 +734,19 @@ def run_alert_query(
             state=state,
         )
     )
-    db.session.commit()
+    session.commit()
 
-    return None
+
+def validate_observations(alert_id: int, label: str, session: Session) -> bool:
+    """
+    Runs an alert's validators to check if it should be triggered or not
+    If so, return the name of the validator that returned true
+    """
+
+    logger.info("Validating observations for alert <%s:%s>", alert_id, label)
+    alert = session.query(Alert).get(alert_id)
+    validate = get_validator_function(alert.validator_type)
+    return bool(validate and validate(alert, alert.validator_config))
 
 
 def next_schedules(
@@ -731,7 +772,11 @@ def next_schedules(
 
 
 def schedule_window(
-    report_type: str, start_at: datetime, stop_at: datetime, resolution: int
+    report_type: str,
+    start_at: datetime,
+    stop_at: datetime,
+    resolution: int,
+    session: Session,
 ) -> None:
     """
     Find all active schedules and schedule celery tasks for
@@ -743,8 +788,7 @@ def schedule_window(
     if not model_cls:
         return None
 
-    dbsession = db.create_scoped_session()
-    schedules = dbsession.query(model_cls).filter(model_cls.active.is_(True))
+    schedules = session.query(model_cls).filter(model_cls.active.is_(True))
 
     for schedule in schedules:
         logging.info("Processing schedule %s", schedule)
@@ -762,8 +806,8 @@ def schedule_window(
         for eta in next_schedules(
             schedule.crontab, schedule_start_at, stop_at, resolution=resolution
         ):
+            logging.info("Scheduled eta %s", eta)
             get_scheduler_action(report_type).apply_async(args, eta=eta)  # type: ignore
-            break
 
     return None
 
@@ -781,7 +825,6 @@ def get_scheduler_action(report_type: str) -> Optional[Callable[..., Any]]:
 @celery_app.task(name="email_reports.schedule_hourly")
 def schedule_hourly() -> None:
     """ Celery beat job meant to be invoked hourly """
-
     if not config["ENABLE_SCHEDULED_EMAIL_REPORTS"]:
         logger.info("Scheduled email reports not enabled in config")
         return
@@ -791,8 +834,10 @@ def schedule_hourly() -> None:
     # Get the top of the hour
     start_at = datetime.now(tzlocal()).replace(microsecond=0, second=0, minute=0)
     stop_at = start_at + timedelta(seconds=3600)
-    schedule_window(ScheduleType.dashboard, start_at, stop_at, resolution)
-    schedule_window(ScheduleType.slice, start_at, stop_at, resolution)
+
+    with session_scope(nullpool=True) as session:
+        schedule_window(ScheduleType.dashboard, start_at, stop_at, resolution, session)
+        schedule_window(ScheduleType.slice, start_at, stop_at, resolution, session)
 
 
 @celery_app.task(name="alerts.schedule_check")
@@ -801,8 +846,8 @@ def schedule_alerts() -> None:
     resolution = 0
     now = datetime.utcnow()
     start_at = now - timedelta(
-        seconds=3600
-    )  # process any missed tasks in the past hour
+        seconds=300
+    )  # process any missed tasks in the past few minutes
     stop_at = now + timedelta(seconds=1)
-
-    schedule_window(ScheduleType.alert, start_at, stop_at, resolution)
+    with session_scope(nullpool=True) as session:
+        schedule_window(ScheduleType.alert, start_at, stop_at, resolution, session)

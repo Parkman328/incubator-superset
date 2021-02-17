@@ -31,7 +31,7 @@ from superset.models.core import Log
 from superset.models.dashboard import Dashboard
 from superset.models.slice import Slice
 from superset.models.tags import Tag, TaggedObject
-from superset.utils.core import parse_human_datetime
+from superset.utils.date_parser import parse_human_datetime
 from superset.views.utils import build_extra_filters
 
 logger = get_task_logger(__name__)
@@ -68,8 +68,8 @@ def get_form_data(
         extra_filters = build_extra_filters(
             layout, filter_scopes, default_filters, chart_id
         )
-    if extra_filters:
-        form_data["extra_filters"] = extra_filters
+        if extra_filters:
+            form_data["extra_filters"] = extra_filters
 
     return form_data
 

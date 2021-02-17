@@ -41,20 +41,27 @@ little bit helps, and credit will always be given.
       - [Reviewing](#reviewing)
       - [Merging](#merging)
       - [Post-merge Responsibility](#post-merge-responsibility)
+  - [Design Guidelines](#design-guidelines)
+    - [Capitalization guidelines](#capitalization-guidelines)
+      - [Sentence case](#sentence-case)
+      - [How to refer to UI elements](#how-to-refer-to-ui-elements)
+      - [\*\*Exceptions to sentence case:](#exceptions-to-sentence-case)
   - [Managing Issues and PRs](#managing-issues-and-prs)
+  - [Reporting a Security Vulnerability](#reporting-a-security-vulnerability)
   - [Revert Guidelines](#revert-guidelines)
   - [Setup Local Environment for Development](#setup-local-environment-for-development)
     - [Documentation](#documentation)
       - [Images](#images)
-      - [API documentation](#api-documentation)
     - [Flask server](#flask-server)
       - [OS Dependencies](#os-dependencies)
       - [Logging to the browser console](#logging-to-the-browser-console)
-    - [Frontend Assets](#frontend-assets)
-      - [nvm and node](#nvm-and-node)
+    - [Frontend](#frontend)
       - [Prerequisite](#prerequisite)
-      - [Installing Dependencies](#installing-dependencies)
-      - [Building](#building)
+        - [nvm and node](#nvm-and-node)
+      - [Install dependencies](#install-dependencies)
+      - [Build assets](#build-assets)
+      - [Webpack dev server](#webpack-dev-server)
+      - [Other npm commands](#other-npm-commands)
       - [Docker (docker-compose)](#docker-docker-compose)
       - [Updating NPM packages](#updating-npm-packages)
       - [Feature flags](#feature-flags)
@@ -69,16 +76,20 @@ little bit helps, and credit will always be given.
     - [Python Testing](#python-testing)
     - [Frontend Testing](#frontend-testing)
     - [Integration Testing](#integration-testing)
+    - [Storybook](#storybook)
   - [Translating](#translating)
     - [Enabling language selection](#enabling-language-selection)
     - [Extracting new strings for translation](#extracting-new-strings-for-translation)
+    - [Updating language files](#updating-language-files)
     - [Creating a new language dictionary](#creating-a-new-language-dictionary)
   - [Tips](#tips)
     - [Adding a new datasource](#adding-a-new-datasource)
     - [Improving visualizations](#improving-visualizations)
+    - [Visualization Plugins](#visualization-plugins)
     - [Adding a DB migration](#adding-a-db-migration)
     - [Merging DB migrations](#merging-db-migrations)
     - [SQL Lab Async](#sql-lab-async)
+    - [Async Chart Queries](#async-chart-queries)
   - [Chart Parameters](#chart-parameters)
     - [Datasource & Chart Type](#datasource--chart-type)
     - [Time](#time)
@@ -87,7 +98,6 @@ little bit helps, and credit will always be given.
     - [Y Axis 1](#y-axis-1)
     - [Y Axis 2](#y-axis-2)
     - [Query](#query)
-    - [Filters Configuration](#filters-configuration)
     - [Chart Options](#chart-options)
     - [Y Axis](#y-axis)
     - [Other](#other)
@@ -97,12 +107,12 @@ little bit helps, and credit will always be given.
 
 Here's a list of repositories that contain Superset-related packages:
 
-- [apache/incubator-superset](https://github.com/apache/incubator-superset)
+- [apache/superset](https://github.com/apache/superset)
   is the main repository containing the `apache-superset` Python package
   distributed on
   [pypi](https://pypi.org/project/apache-superset/). This repository
   also includes Superset's main TypeScript/JavaScript bundles and react apps under
-  the [superset-frontend](https://github.com/apache/incubator-superset/tree/master/superset-frontend)
+  the [superset-frontend](https://github.com/apache/superset/tree/master/superset-frontend)
   folder.
 - [apache-superset/superset-ui](https://github.com/apache-superset/superset-ui)
   contains core Superset's
@@ -141,7 +151,7 @@ The best way is to file an issue on GitHub:
 - Keep the scope as narrow as possible, to make it easier to implement.
 - Remember that this is a volunteer-driven project, and that contributions are welcome :)
 
-For large features or major changes to codebase, please create **Superset Improvement Proposal (SIP)**. See template from [SIP-0](https://github.com/apache/incubator-superset/issues/5602)
+For large features or major changes to codebase, please create **Superset Improvement Proposal (SIP)**. See template from [SIP-0](https://github.com/apache/superset/issues/5602)
 
 ### Fix Bugs
 
@@ -189,6 +199,8 @@ The purpose is to separate problem from possible solutions.
 
 In general, small PRs are always easier to review than large PRs. The best practice is to break your work into smaller independent PRs and refer to the same issue. This will greatly reduce turnaround time.
 
+If you wish to share your work which is not ready to merge yet, create a [Draft PR](https://github.blog/2019-02-14-introducing-draft-pull-requests/). This will enable maintainers and the CI runner to prioritize mature PR's.
+
 Finally, never submit a PR that will put master branch in broken state. If the PR is part of multiple PRs to complete a large feature and cannot work on its own, you can create a feature branch and merge all related PRs into the feature branch before creating a PR from feature branch to master.
 
 ### Protocol
@@ -196,7 +208,26 @@ Finally, never submit a PR that will put master branch in broken state. If the P
 #### Authoring
 
 - Fill in all sections of the PR template.
+- Title the PR with one of the following semantic prefixes (inspired by [Karma](http://karma-runner.github.io/0.10/dev/git-commit-msg.html])):
+
+  - `feat` (new feature)
+  - `fix` (bug fix)
+  - `docs` (changes to the documentation)
+  - `style` (formatting, missing semi colons, etc; no application logic change)
+  - `refactor` (refactoring code)
+  - `test` (adding missing tests, refactoring tests; no application logic change)
+  - `chore` (updating tasks etc; no application logic change)
+  - `perf` (performance-related change)
+  - `build` (build tooling, Docker configuration change)
+  - `ci` (test runner, Github Actions workflow changes)
+  - `other` (changes that don't correspond to the above -- should be rare!)
+  - Examples:
+    - `feat: export charts as ZIP files`
+    - `perf(api): improve API info performance`
+    - `fix(chart-api): cached-indicator always shows value is cached`
+
 - Add prefix `[WIP]` to title if not ready for review (WIP = work-in-progress). We recommend creating a PR with `[WIP]` first and remove it once you have passed CI test and read through your code changes at least once.
+- If you believe your PR contributes a potentially breaking change, put a `!` after the semantic prefix but before the colon in the PR title, like so: `feat!: Added foo functionality to bar`
 - **Screenshots/GIFs:** Changes to user interface require before/after screenshots, or GIF for interactions
   - Recommended capture tools ([Kap](https://getkap.co/), [LICEcap](https://www.cockos.com/licecap/), [Skitch](https://download.cnet.com/Skitch/3000-13455_4-189876.html))
   - If no screenshot is provided, the committers will mark the PR with `need:screenshot` label and will not review until screenshot is provided.
@@ -204,7 +235,7 @@ Finally, never submit a PR that will put master branch in broken state. If the P
   - For Python, include it in `setup.py` denoting any specific restrictions and in `requirements.txt` pinned to a specific version which ensures that the application build is deterministic.
   - For TypeScript/JavaScript, include new libraries in `package.json`
 - **Tests:** The pull request should include tests, either as doctests, unit tests, or both. Make sure to resolve all errors and test failures. See [Testing](#testing) for how to run tests.
-- **Documentation:** If the pull request adds functionality, the docs should be updated as part of the same PR. Doc string are often sufficient, make sure to follow the sphinx compatible standards.
+- **Documentation:** If the pull request adds functionality, the docs should be updated as part of the same PR.
 - **CI:** Reviewers will not review the code until all CI tests are passed. Sometimes there can be flaky tests. You can close and open PR to re-run CI test. Please report if the issue persists. After the CI fix has been deployed to `master`, please rebase your PR.
 - **Code coverage:** Please ensure that code coverage does not decrease.
 - Remove `[WIP]` when ready for review. Please note that it may be merged soon after approved so please make sure the PR is ready to merge and do not expect more time for post-approval edits.
@@ -227,6 +258,54 @@ Finally, never submit a PR that will put master branch in broken state. If the P
 
 - Project maintainers may contact the PR author if new issues are introduced by the PR.
 - Project maintainers may revert your changes if a critical issue is found, such as breaking master branch CI.
+
+## Design Guidelines
+
+### Capitalization guidelines
+
+#### Sentence case
+
+Use sentence-case capitalization for everything in the UI (except these \*\*).
+
+Sentence case is predominantly lowercase. Capitalize only the initial character of the first word, and other words that require capitalization, like:
+
+- **Proper nouns.** Objects in the product _are not_ considered proper nouns e.g. dashboards, charts, saved queries etc. Proprietary feature names eg. SQL Lab, Preset Manager _are_ considered proper nouns
+- **Acronyms** (e.g. CSS, HTML)
+- When referring to **UI labels that are themselves capitalized** from sentence case (e.g. page titles - Dashboards page, Charts page, Saved queries page, etc.)
+- User input that is reflected in the UI. E.g. a user-named a dashboard tab
+
+**Sentence case vs. Title case:**
+Title case: "A Dog Takes a Walk in Paris"
+Sentence case: "A dog takes a walk in Paris"
+
+**Why sentence case?**
+
+- It’s generally accepted as the quickest to read
+- It’s the easiest form to distinguish between common and proper nouns
+
+#### How to refer to UI elements
+
+When writing about a UI element, use the same capitalization as used in the UI.
+
+For example, if an input field is labeled “Name” then you refer to this as the “Name input field”. Similarly, if a button has the label “Save” in it, then it is correct to refer to the “Save button”.
+
+Where a product page is titled “Settings”, you refer to this in writing as follows:
+“Edit your personal information on the Settings page”.
+
+Often a product page will have the same title as the objects it contains. In this case, refer to the page as it appears in the UI, and the objects as common nouns:
+
+- Upload a dashboard on the Dashboards page
+- Go to Dashboards
+- View dashboard
+- View all dashboards
+- Upload CSS templates on the CSS templates page
+- Queries that you save will appear on the Saved queries page
+- Create custom queries in SQL Lab then create dashboards
+
+#### \*\*Exceptions to sentence case:
+
+- Input labels, buttons and UI tabs are all caps
+- User input values (e.g. column names, SQL Lab tab names) should be in their original case
 
 ## Managing Issues and PRs
 
@@ -264,6 +343,12 @@ If the PR passes CI tests and does not have any `need:` labels, it is ready for 
 
 If an issue/PR has been inactive for >=30 days, it will be closed. If it does not have any status label, add `inactive`.
 
+## Reporting a Security Vulnerability
+
+Please report security vulnerabilities to private@superset.apache.org.
+
+In the event a community member discovers a security flaw in Superset, it is important to follow the [Apache Security Guidelines](https://www.apache.org/security/committers.html) and release a fix as quickly as possible before public disclosure. Reporting security vulnerabilities through the usual GitHub Issues channel is not ideal as it will publicize the flaw before a fix can be applied.
+
 ## Revert Guidelines
 
 Reverting changes that are causing issues in the master branch is a normal and expected part of the development process. In an open source community, the ramifications of a change cannot always be fully understood. With that in mind, here are some considerations to keep in mind when considering a revert:
@@ -286,74 +371,16 @@ Should you decide that reverting is desirable, it is the responsibility of the C
 First, [fork the repository on GitHub](https://help.github.com/articles/about-forks/), then clone it. You can clone the main repository directly, but you won't be able to send pull requests.
 
 ```bash
-git clone git@github.com:your-username/incubator-superset.git
-cd incubator-superset
+git clone git@github.com:your-username/superset.git
+cd superset
 ```
 
 ### Documentation
 
-The latest documentation and tutorial are available at https://superset.incubator.apache.org/.
+The latest documentation and tutorial are available at https://superset.apache.org/.
 
-Contributing to the official documentation is relatively easy, once you've setup
-your environment and done an edit end-to-end. The docs can be found in the
-`docs/` subdirectory of the repository, and are written in the
-[reStructuredText format](https://en.wikipedia.org/wiki/ReStructuredText) (.rst).
-If you've written Markdown before, you'll find the reStructuredText format familiar.
-
-Superset uses [Sphinx](http://www.sphinx-doc.org/en/1.5.1/) to convert the rst files
-in `docs/` to the final HTML output users see.
-
-Finally, to make changes to the rst files and build the docs using Sphinx,
-you'll need to install a handful of dependencies from the repo you cloned:
-
-```bash
-pip install -r requirements/documentation.txt
-```
-
-To get the feel for how to edit and build the docs, let's edit a file, build
-the docs and see our changes in action. First, you'll want to
-[create a new branch](https://git-scm.com/book/en/v2/Git-Branching-Basic-Branching-and-Merging)
-to work on your changes:
-
-```bash
-git checkout -b changes-to-docs
-```
-
-Now, go ahead and edit one of the files under `docs/`, say `docs/tutorial.rst` - change
-it however you want. Check out the
-[ReStructuredText Primer](http://docutils.sourceforge.net/docs/user/rst/quickstart.html)
-for a reference on the formatting of the rst files.
-
-Once you've made your changes, run this command to convert the docs into HTML:
-
-```bash
-make html
-```
-
-You'll see a lot of output as Sphinx handles the conversion. After it's done, the
-HTML Sphinx generated should be in `docs/_build/html`. Navigate there
-and start a simple web server so we can check out the docs in a browser:
-
-```bash
-cd docs/_build/html
-python -m http.server # Python2 users should use SimpleHTTPServer
-
-```
-
-This will start a small Python web server listening on port 8000. Point your
-browser to http://localhost:8000, find the file
-you edited earlier, and check out your changes!
-
-If you've made a change you'd like to contribute to the actual docs, just commit
-your code, push your new branch to Github:
-
-```bash
-git add docs/tutorial.rst
-git commit -m 'Awesome new change to tutorial'
-git push origin changes-to-docs
-```
-
-Then, [open a pull request](https://help.github.com/articles/about-pull-requests/).
+The site is written using the Gatsby framework and docz for the
+documentation subsection. Find out more about it in `docs/README.md`
 
 #### Images
 
@@ -364,38 +391,23 @@ referenced in the rst, e.g.
 
 aren't actually stored in that directory. Instead, you should add and commit
 images (and any other static assets) to the `superset-frontend/images` directory.
-When the docs are deployed to https://superset.incubator.apache.org/, images
+When the docs are deployed to https://superset.apache.org/, images
 are copied from there to the `_static/images` directory, just like they're referenced
 in the docs.
 
 For example, the image referenced above actually lives in `superset-frontend/images/tutorial`. Since the image is moved during the documentation build process, the docs reference the image in `_static/images/tutorial` instead.
 
-#### API documentation
-
-Generate the API documentation with:
-
-```bash
-pip install -r requirements/documentation.txt
-python setup.py build_sphinx
-```
-
 ### Flask server
 
 #### OS Dependencies
 
-Make sure your machine meets the [OS dependencies](https://superset.incubator.apache.org/installation.html#os-dependencies) before following these steps.
+Make sure your machine meets the [OS dependencies](https://superset.apache.org/docs/installation/installing-superset-from-scratch#os-dependencies) before following these steps.
 
-Developers should use a virtualenv.
-
-```bash
-pip install virtualenv
-```
-
-Then proceed with:
+Ensure Python versions >3.7, Then proceed with:
 
 ```bash
-# Create a virtual environemnt and activate it (recommended)
-virtualenv -p python3 venv # setup a python3.6 virtualenv
+# Create a virtual environment and activate it (recommended)
+python3 -m venv venv # setup a python3 virtualenv
 source venv/bin/activate
 
 # Install external dependencies
@@ -453,24 +465,35 @@ app.logger.error('An exception occurred!')
 app.logger.info(form_data)
 ```
 
-### Frontend Assets
+### Frontend
 
-Frontend assets (TypeScript, JavaScript, CSS, and images) must be compiled in order to properly display the web UI. The `superset-frontend` directory contains all NPM-managed front end assets. Note that there are additional frontend assets bundled with Flask-Appbuilder (e.g. jQuery and bootstrap); these are not managed by NPM, and may be phased out in the future.
-
-#### nvm and node
-
-First, be sure you are using recent versions of NodeJS and npm. Using [nvm](https://github.com/creationix/nvm) to manage them is recommended. Check the docs at the link to be sure, but at the time of writing the following would install nvm and node:
-
-```bash
-curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.34.0/install.sh | bash
-nvm install node
-```
+Frontend assets (TypeScript, JavaScript, CSS, and images) must be compiled in order to properly display the web UI. The `superset-frontend` directory contains all NPM-managed frontend assets. Note that for some legacy pages there are additional frontend assets bundled with Flask-Appbuilder (e.g. jQuery and bootstrap). These are not managed by NPM and may be phased out in the future.
 
 #### Prerequisite
 
-#### Installing Dependencies
+##### nvm and node
 
-Install third-party dependencies listed in `package.json`:
+First, be sure you are using recent versions of Node.js and npm. We recommend using [nvm](https://github.com/nvm-sh/nvm) to manage your node environment:
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.37.0/install.sh | bash
+
+cd superset-frontend
+nvm install
+nvm use
+```
+
+For those interested, you may also try out [avn](https://github.com/nvm-sh/nvm#deeper-shell-integration) to automatically switch to the node version that is required to run Superset frontend.
+
+We have upgraded our `package-lock.json` to use `lockfileversion: 2` from npm 7, so please make sure you have installed npm 7, too:
+
+```bash
+npm install -g npm@7
+```
+
+#### Install dependencies
+
+Install third-party dependencies listed in `package.json` via:
 
 ```bash
 # From the root of the repository
@@ -480,40 +503,40 @@ cd superset-frontend
 npm ci
 ```
 
-#### Building
+#### Build assets
 
-You can run the Webpack dev server (in a separate terminal from Flask), which runs on port 9000 and proxies non-asset requests to the Flask server on port 8088. After pointing your browser to `http://localhost:9000`, updates to asset sources will be reflected in-browser without a refresh.
+There are three types of assets you can build:
+
+1. `npm run build`: the production assets, CSS/JSS minified and optimized
+2. `npm run dev-server`: local development assets, with sourcemaps and hot refresh support
+3. `npm run build-instrumented`: instrumented application code for collecting code coverage from Cypress tests
+
+#### Webpack dev server
+
+The dev server by default starts at `http://localhost:9000` and proxies the backend requests to `http://localhost:8080`. It's possible to change these settings:
 
 ```bash
-# Run the dev server
+# Start the dev server at http://localhost:9000
 npm run dev-server
 
 # Run the dev server on a non-default port
 npm run dev-server -- --devserverPort=9001
 
-# Run the dev server proxying to a Flask server on a non-default port
+# Proxy backend requests to a Flask server running on a non-default port
 npm run dev-server -- --supersetPort=8081
 
-# Or proxy it to a remote backend so you can test frontend changes without
-# starting the backend locally
+# Proxy to a remote backend but serve local assets
 npm run dev-server -- --superset=https://superset-dev.example.com
 ```
 
-Alternatively you can use one of the following commands.
+The `--superset=` option is useful in case you want to debug a production issue or have to setup Superset behind a firewall. It allows you to run Flask server in another environment while keep assets building locally for the best developer experience.
 
-```bash
-# Start a watcher that recompiles your assets as you modify them (but have to manually reload your browser to see changes.)
-npm run dev
+#### Other npm commands
 
-# Compile the TypeScript/JavaScript and CSS in production/optimized mode for official releases
-npm run prod
-```
+Alternatively, there are other NPM commands you may find useful:
 
-If you run this service from somewhere other than your local machine, you may need to add hostname value to webpack.config.js at .devServer.public specifying the endpoint at which you will access the app. For example: myhost:9001. For convenience you may want to install webpack, webpack-cli and webpack-dev-server globally so that you can run them directly:
-
-```bash
-npm install --global webpack webpack-cli webpack-dev-server
-```
+1. `npm run build-dev`: build assets in development mode.
+2. `npm run dev`: built dev assets in watch mode, will automatically rebuild when a file changes
 
 #### Docker (docker-compose)
 
@@ -539,7 +562,7 @@ If you want to use the same flag in the client code, also add it to the FeatureF
 
 ```typescript
 export enum FeatureFlag {
-  SCOPED_FILTER = 'SCOPED_FILTER',
+  SCOPED_FILTER = "SCOPED_FILTER",
 }
 ```
 
@@ -556,13 +579,19 @@ pip3 install -r requirements/integration.txt
 pre-commit install
 ```
 
+Alternatively it is possible to run pre-commit via tox:
+
+```bash
+tox -e pre-commit
+```
+
 ## Linting
 
 Lint the project with:
 
 ```bash
 # for python
-tox -e flake8
+tox -e pylint
 
 # for frontend
 cd superset-frontend
@@ -597,7 +626,7 @@ or similar as the later will cause typing issues. The former is of type `List[Ca
 
 To ensure clarity, consistency, all readability, _all_ new functions should use
 [type hints](https://docs.python.org/3/library/typing.html) and include a
-docstring using Sphinx documentation.
+docstring.
 
 Note per [PEP-484](https://www.python.org/dev/peps/pep-0484/#exceptions) no
 syntax for listing explicitly raised exceptions is proposed and thus the
@@ -622,7 +651,7 @@ def sqrt(x: Union[float, int]) -> Union[float, int]:
 
 ### TypeScript
 
-TypeScript is fully supported and is the recommended language for writing all new frontend components. When modifying existing functions/components, migrating to TypeScript is appreciated, but not required. Examples of migrating functions/components to TypeScript can be found in [#9162](https://github.com/apache/incubator-superset/pull/9162) and [#9180](https://github.com/apache/incubator-superset/pull/9180).
+TypeScript is fully supported and is the recommended language for writing all new frontend components. When modifying existing functions/components, migrating to TypeScript is appreciated, but not required. Examples of migrating functions/components to TypeScript can be found in [#9162](https://github.com/apache/superset/pull/9162) and [#9180](https://github.com/apache/superset/pull/9180).
 
 ## Testing
 
@@ -639,7 +668,7 @@ tox -e <environment>
 For example,
 
 ```bash
-tox -e py36
+tox -e py38
 ```
 
 Alternatively, you can run all tests in a single file via,
@@ -651,7 +680,7 @@ tox -e <environment> -- tests/test_file.py
 or for a specific test via,
 
 ```bash
-tox -e <environment> -- tests/test_file.py:TestClassName.test_method_name
+tox -e <environment> -- tests/test_file.py::TestClassName::test_method_name
 ```
 
 Note that the test environment uses a temporary directory for defining the
@@ -667,16 +696,25 @@ cd superset-frontend
 npm run test
 ```
 
+To run a single test file:
+
+```bash
+npm run test -- path/to/file.js
+```
+
 ### Integration Testing
 
 We use [Cypress](https://www.cypress.io/) for integration tests. Tests can be run by `tox -e cypress`. To open Cypress and explore tests first setup and run test server:
 
 ```bash
 export SUPERSET_CONFIG=tests.superset_test_config
+export SUPERSET_TESTENV=true
+export ENABLE_REACT_CRUD_VIEWS=true
+export CYPRESS_BASE_URL="http://localhost:8081"
 superset db upgrade
-superset init
 superset load_test_users
-superset load_examples
+superset load_examples --load-test-data
+superset init
 superset run --port 8081
 ```
 
@@ -684,23 +722,51 @@ Run Cypress tests:
 
 ```bash
 cd superset-frontend
-npm run build
+npm run build-instrumented
 
 cd cypress-base
 npm install
-npm run cypress run
+
+# run tests via headless Chrome browser (requires Chrome 64+)
+npm run cypress-run-chrome
 
 # run tests from a specific file
-npm run cypress run -- --spec cypress/integration/explore/link.test.js
+npm run cypress-run-chrome -- --spec cypress/integration/explore/link.test.js
 
 # run specific file with video capture
-npm run cypress run -- --spec cypress/integration/dashboard/index.test.js --config video=true
+npm run cypress-run-chrome -- --spec cypress/integration/dashboard/index.test.js --config video=true
 
 # to open the cypress ui
-npm run cypress open
+npm run cypress-debug
+
+# to point cypress to a url other than the default (http://localhost:8088) set the environment variable before running the script
+# e.g., CYPRESS_BASE_URL="http://localhost:9000"
+CYPRESS_BASE_URL=<your url> npm run cypress open
 ```
 
-See [`superset-frontend/cypress_build.sh`](https://github.com/apache/incubator-superset/blob/master/superset-frontend/cypress_build.sh).
+See [`superset-frontend/cypress_build.sh`](https://github.com/apache/superset/blob/master/superset-frontend/cypress_build.sh).
+
+As an alternative you can use docker-compose environment for testing:
+
+Make sure you have added below line to your /etc/hosts file:
+`127.0.0.1 db`
+
+If you already have launched Docker environment please use the following command to assure a fresh database instance:
+`docker-compose down -v`
+
+Launch environment:
+
+`CYPRESS_CONFIG=true docker-compose up`
+
+It will serve backend and frontend on port 8088.
+
+Run Cypress tests:
+
+```bash
+cd cypress-base
+npm install
+npm run cypress open
+```
 
 ### Storybook
 
@@ -708,7 +774,7 @@ Superset includes a [Storybook](https://storybook.js.org/) to preview the layout
 
 ```bash
 cd superset-frontend
-npm run storybool
+npm run storybook
 ```
 
 When contributing new React components to Superset, please try to add a Story alongside the component's `jsx/tsx` file.
@@ -734,7 +800,7 @@ In TypeScript/JavaScript, the technique is similar:
 we import `t` (simple translation), `tn` (translation containing a number).
 
 ```javascript
-import { t, tn } from '@superset-ui/translation';
+import { t, tn } from "@superset-ui/translation";
 ```
 
 ### Enabling language selection
@@ -754,30 +820,49 @@ LANGUAGES = {
 ### Extracting new strings for translation
 
 ```bash
-flask fab babel-extract --target superset/translations --output superset/translations/messages.pot --config superset/translations/babel.cfg -k _ -k __ -k t -k tn -k tct
+pybabel extract -F superset/translations/babel.cfg -o superset/translations/messages.pot -k _ -k __ -k t -k tn -k tct .
 ```
+
+This will update the template file `superset/translations/messages.pot` with current application strings. Do not forget to update
+this file with the appropriate license information.
+
+### Updating language files
+
+```bash
+ pybabel update -i superset/translations/messages.pot -d superset/translations --ignore-obsolete
+```
+
+This will update language files with the new extracted strings.
 
 You can then translate the strings gathered in files located under
 `superset/translation`, where there's one per language. You can use [Poedit](https://poedit.net/features)
 to translate the `po` file more conveniently.
 There are some [tutorials in the wiki](https://wiki.lxde.org/en/Translate_*.po_files_with_Poedit).
 
-For the translations to take effect:
+In the case of JS translation, we need to convert the PO file into a JSON file, and we need the global download of the npm package po2json.
 
 ```bash
-# In the case of JS translation, we need to convert the PO file into a JSON file, and we need the global download of the npm package po2json.
 npm install -g po2json
-flask fab babel-compile --target superset/translations
-# Convert the en PO file into a JSON file
-po2json -d superset -f jed1.x superset/translations/en/LC_MESSAGES/messages.po superset/translations/en/LC_MESSAGES/messages.json
+```
+
+To convert all PO files to formatted JSON files you can use the `po2json.sh` script.
+
+```bash
+./scripts/po2json.sh
 ```
 
 If you get errors running `po2json`, you might be running the Ubuntu package with the same
-name, rather than the NodeJS package (they have a different format for the arguments). If
+name, rather than the Node.js package (they have a different format for the arguments). If
 there is a conflict, you may need to update your `PATH` environment variable or fully qualify
 the executable path (e.g. `/usr/local/bin/po2json` instead of `po2json`).
 If you get a lot of `[null,***]` in `messages.json`, just delete all the `null,`.
 For example, `"year":["年"]` is correct while `"year":[null,"年"]`is incorrect.
+
+For the translations to take effect we need to compile translation catalogs into binary MO files.
+
+```bash
+pybabel compile -d superset/translations
+```
 
 ### Creating a new language dictionary
 
@@ -825,7 +910,10 @@ yarn build
 Then use `npm link` to create symlinks of the plugins/superset-ui packages you want to edit in `superset-frontend/node_modules`:
 
 ```bash
-cd incubator-superset/superset-frontend
+# Since npm 7, you have to install plugin dependencies separately, too
+cd ../../superset-ui/plugins/[PLUGIN NAME] && npm install --legacy-peer-deps
+
+cd superset/superset-frontend
 npm link ../../superset-ui/plugins/[PLUGIN NAME]
 
 # Or to link all core superset-ui and plugin packages:
@@ -839,7 +927,6 @@ When `superset-ui` packages are linked with `npm link`, the dev server will auto
 
 Note that every time you do `npm install`, you will lose the symlink(s) and may have to run `npm link` again.
 
-
 ### Visualization Plugins
 
 The topic of authoring new plugins, whether you'd like to contribute
@@ -847,15 +934,16 @@ it back or not has been well documented in the
 [So, You Want to Build a Superset Viz Plugin...](https://preset.io/blog/2020-07-02-hello-world/) blog post
 
 To contribute a plugin to Superset-UI, your plugin must meet the following criteria:
-* The plugin should be applicable to the community at large, not a particularly specialized use case
-* The plugin should be written with TypeScript
-* The plugin should contain sufficient unit/e2e tests
-* The plugin should use appropriate namespacing, e.g. a folder name of `plugin-chart-whatever` and a package name of `@superset-ui/plugin-chart-whatever`
-* The plugin should use them variables via Emotion, as passed in by the ThemeProvider
-* The plugin should provide adequate error handling (no data returned, malformatted data, invalid controls, etc.)
-* The plugin should contain documentation in the form of a populated `README.md` file
-* The plugin should have a meaningful and unique icon
-* Above all else, the plugin should come with a *commitment to maintenance* from the original author(s)
+
+- The plugin should be applicable to the community at large, not a particularly specialized use case
+- The plugin should be written with TypeScript
+- The plugin should contain sufficient unit/e2e tests
+- The plugin should use appropriate namespacing, e.g. a folder name of `plugin-chart-whatever` and a package name of `@superset-ui/plugin-chart-whatever`
+- The plugin should use them variables via Emotion, as passed in by the ThemeProvider
+- The plugin should provide adequate error handling (no data returned, malformatted data, invalid controls, etc.)
+- The plugin should contain documentation in the form of a populated `README.md` file
+- The plugin should have a meaningful and unique icon
+- Above all else, the plugin should come with a _commitment to maintenance_ from the original author(s)
 
 Submissions will be considered for submission (or removal) on a case-by-case basis.
 
@@ -863,7 +951,7 @@ Submissions will be considered for submission (or removal) on a case-by-case bas
 
 1. Alter the model you want to change. This example will add a `Column` Annotations model.
 
-   [Example commit](https://github.com/apache/incubator-superset/commit/6c25f549384d7c2fc288451222e50493a7b14104)
+   [Example commit](https://github.com/apache/superset/commit/6c25f549384d7c2fc288451222e50493a7b14104)
 
 1. Generate the migration file
 
@@ -873,7 +961,7 @@ Submissions will be considered for submission (or removal) on a case-by-case bas
 
    This will generate a file in `migrations/version/{SHA}_this_will_be_in_the_migration_filename.py`.
 
-   [Example commit](https://github.com/apache/incubator-superset/commit/d3e83b0fd572c9d6c1297543d415a332858e262)
+   [Example commit](https://github.com/apache/superset/commit/d3e83b0fd572c9d6c1297543d415a332858e262)
 
 1. Upgrade the DB
 
@@ -893,7 +981,7 @@ Submissions will be considered for submission (or removal) on a case-by-case bas
 
    Since there is a new column, we need to add it to the AppBuilder Model view.
 
-   [Example commit](https://github.com/apache/incubator-superset/pull/5745/commits/6220966e2a0a0cf3e6d87925491f8920fe8a3458)
+   [Example commit](https://github.com/apache/superset/pull/5745/commits/6220966e2a0a0cf3e6d87925491f8920fe8a3458)
 
 1. Test the migration's `down` method
 
@@ -977,6 +1065,29 @@ Note that:
   to your production environment, and use the similar broker as well as
   results backend configuration
 
+### Async Chart Queries
+
+It's possible to configure database queries for charts to operate in `async` mode. This is especially useful for dashboards with many charts that may otherwise be affected by browser connection limits. To enable async queries for dashboards and Explore, the following dependencies are required:
+
+- Redis 5.0+ (the feature utilizes [Redis Streams](https://redis.io/topics/streams-intro))
+- Cache backends enabled via the `CACHE_CONFIG` and `DATA_CACHE_CONFIG` config settings
+- Celery workers configured and running to process async tasks
+
+The following configuration settings are available for async queries (see config.py for default values)
+
+- `GLOBAL_ASYNC_QUERIES` (feature flag) - enable or disable async query operation
+- `GLOBAL_ASYNC_QUERIES_REDIS_CONFIG` - Redis connection info
+- `GLOBAL_ASYNC_QUERIES_REDIS_STREAM_PREFIX` - the prefix used with Redis Streams
+- `GLOBAL_ASYNC_QUERIES_REDIS_STREAM_LIMIT` - the maximum number of events for each user-specific event stream (FIFO eviction)
+- `GLOBAL_ASYNC_QUERIES_REDIS_STREAM_LIMIT_FIREHOSE` - the maximum number of events for all users (FIFO eviction)
+- `GLOBAL_ASYNC_QUERIES_JWT_COOKIE_NAME` - the async query feature uses a [JWT](https://tools.ietf.org/html/rfc7519) cookie for authentication, this setting is the cookie's name
+- `GLOBAL_ASYNC_QUERIES_JWT_COOKIE_SECURE` - JWT cookie secure option
+- `GLOBAL_ASYNC_QUERIES_JWT_SECRET` - JWT's use a secret key to sign and validate the contents. This value should be at least 32 bytes and have sufficient randomness for proper security
+- `GLOBAL_ASYNC_QUERIES_TRANSPORT` - currently the only available option is (HTTP) `polling`, but support for a WebSocket will be added in future versions
+- `GLOBAL_ASYNC_QUERIES_POLLING_DELAY` - the time (in ms) between polling requests
+
+More information on the async query feature can be found in [SIP-39](https://github.com/apache/superset/issues/9190).
+
 ## Chart Parameters
 
 Chart parameters are stored as a JSON encoded string the `slices.params` column and are often referenced throughout the code as form-data. Currently the form-data is neither versioned nor typed as thus is somewhat free-formed. Note in the future there may be merit in using something like [JSON Schema](https://json-schema.org/) to both annotate and validate the JSON object in addition to using a Mypy `TypedDict` (introduced in Python 3.8) for typing the form-data in the backend. This section serves as a potential primer for that work.
@@ -998,22 +1109,22 @@ Note not all fields are correctly catagorized. The fields vary based on visualiz
 
 ### Time
 
-| Field                  | Type            | Notes                                 |
-| ---------------------- | --------------- | ------------------------------------- |
-| `druid_time_origin`    | _string_        | The Druid **Origin** widget           |
-| `granularity`          | _string_        | The Druid **Time Granularity** widget |
-| `granularity_sqla`     | _string_        | The SQLA **Time Column** widget       |
-| `time_grain_sqla`      | _string_        | The SQLA **Time Grain** widget        |
-| `time_range`           | _string_        | The **Time range** widget             |
+| Field               | Type     | Notes                                 |
+| ------------------- | -------- | ------------------------------------- |
+| `druid_time_origin` | _string_ | The Druid **Origin** widget           |
+| `granularity`       | _string_ | The Druid **Time Granularity** widget |
+| `granularity_sqla`  | _string_ | The SQLA **Time Column** widget       |
+| `time_grain_sqla`   | _string_ | The SQLA **Time Grain** widget        |
+| `time_range`        | _string_ | The **Time range** widget             |
 
 ### GROUP BY
 
-| Field                     | Type            | Notes                       |
-| ------------------------- | --------------- | --------------------------- |
-| `metrics`                 | _array(string)_ | See Query section           |
-| `order_asc`               | -               | See Query section           |
-| `row_limit`               | -               | See Query section           |
-| `timeseries_limit_metric` | -               | See Query section           |
+| Field                     | Type            | Notes             |
+| ------------------------- | --------------- | ----------------- |
+| `metrics`                 | _array(string)_ | See Query section |
+| `order_asc`               | -               | See Query section |
+| `row_limit`               | -               | See Query section |
+| `timeseries_limit_metric` | -               | See Query section |
 
 ### NOT GROUPED BY
 
@@ -1031,9 +1142,9 @@ Note not all fields are correctly catagorized. The fields vary based on visualiz
 
 ### Y Axis 2
 
-| Field             | Type     | Notes                                               |
-| ----------------- | -------- | --------------------------------------------------- |
-| `metric_2`        | -        | The **Right Axis Metric** widget. See Query section |
+| Field      | Type | Notes                                               |
+| ---------- | ---- | --------------------------------------------------- |
+| `metric_2` | -    | The **Right Axis Metric** widget. See Query section |
 
 ### Query
 
@@ -1052,68 +1163,68 @@ The `metric` (or equivalent) and `timeseries_limit_metric` fields are all compos
 
 ### Chart Options
 
-| Field                 | Type      | Notes                                            |
-| --------------------- | --------- | ------------------------------------------------ |
-| `color_picker`        | _object_  | The **Fixed Color** widget                       |
-| `label_colors`        | _object_  | The **Color Scheme** widget                      |
-| `normalized`          | _boolean_ | The **Normalized** widget                        |
+| Field          | Type      | Notes                       |
+| -------------- | --------- | --------------------------- |
+| `color_picker` | _object_  | The **Fixed Color** widget  |
+| `label_colors` | _object_  | The **Color Scheme** widget |
+| `normalized`   | _boolean_ | The **Normalized** widget   |
 
 ### Y Axis
 
-| Field               | Type            | Notes                        |
-| ------------------- | --------------- | ---------------------------- |
-| `y_axis_2_label`    | _N/A_           | _Deprecated?_                |
-| `y_axis_format`     | _string_        | The **Y Axis Format** widget |
-| `y_axis_zero`       | _N/A_           | _Deprecated?_                |
+| Field            | Type     | Notes                        |
+| ---------------- | -------- | ---------------------------- |
+| `y_axis_2_label` | _N/A_    | _Deprecated?_                |
+| `y_axis_format`  | _string_ | The **Y Axis Format** widget |
+| `y_axis_zero`    | _N/A_    | _Deprecated?_                |
 
 Note the `y_axis_format` is defined under various section for some charts.
 
 ### Other
 
-| Field          | Type     | Notes        |
-| -------------- | -------- | ------------ |
-| `color_scheme` | _string_ |              |
+| Field          | Type     | Notes |
+| -------------- | -------- | ----- |
+| `color_scheme` | _string_ |       |
 
 ### Unclassified
 
-| Field                           | Type  | Notes |
-| ------------------------------- | ----- | ----- |
-| `add_to_dash`                   | _N/A_ |       |
-| `code`                          | _N/A_ |       |
-| `collapsed_fieldsets`           | _N/A_ |       |
-| `comparison type`               | _N/A_ |       |
-| `country_fieldtype`             | _N/A_ |       |
-| `default_filters`               | _N/A_ |       |
-| `entity`                        | _N/A_ |       |
-| `expanded_slices`               | _N/A_ |       |
-| `extra_filters`                 | _N/A_ |       |
-| `filter_immune_slice_fields`    | _N/A_ |       |
-| `filter_immune_slices`          | _N/A_ |       |
-| `flt_col_0`                     | _N/A_ |       |
-| `flt_col_1`                     | _N/A_ |       |
-| `flt_eq_0`                      | _N/A_ |       |
-| `flt_eq_1`                      | _N/A_ |       |
-| `flt_op_0`                      | _N/A_ |       |
-| `flt_op_1`                      | _N/A_ |       |
-| `goto_dash`                     | _N/A_ |       |
-| `import_time`                   | _N/A_ |       |
-| `label`                         | _N/A_ |       |
-| `linear_color_scheme`           | _N/A_ |       |
-| `new_dashboard_name`            | _N/A_ |       |
-| `new_slice_name`                | _N/A_ |       |
-| `num_period_compare`            | _N/A_ |       |
-| `period_ratio_type`             | _N/A_ |       |
-| `perm`                          | _N/A_ |       |
-| `rdo_save`                      | _N/A_ |       |
-| `refresh_frequency`             | _N/A_ |       |
-| `remote_id`                     | _N/A_ |       |
-| `resample_fillmethod`           | _N/A_ |       |
-| `resample_how`                  | _N/A_ |       |
-| `rose_area_proportion`          | _N/A_ |       |
-| `save_to_dashboard_id`          | _N/A_ |       |
-| `schema`                        | _N/A_ |       |
-| `series`                        | _N/A_ |       |
-| `show_bubbles`                  | _N/A_ |       |
-| `slice_name`                    | _N/A_ |       |
-| `timed_refresh_immune_slices`   | _N/A_ |       |
-| `userid`                        | _N/A_ |       |
+| Field                         | Type  | Notes |
+| ----------------------------- | ----- | ----- |
+| `add_to_dash`                 | _N/A_ |       |
+| `code`                        | _N/A_ |       |
+| `collapsed_fieldsets`         | _N/A_ |       |
+| `comparison type`             | _N/A_ |       |
+| `country_fieldtype`           | _N/A_ |       |
+| `default_filters`             | _N/A_ |       |
+| `entity`                      | _N/A_ |       |
+| `expanded_slices`             | _N/A_ |       |
+| `extra_filters`               | _N/A_ |       |
+| `filter_immune_slice_fields`  | _N/A_ |       |
+| `filter_immune_slices`        | _N/A_ |       |
+| `flt_col_0`                   | _N/A_ |       |
+| `flt_col_1`                   | _N/A_ |       |
+| `flt_eq_0`                    | _N/A_ |       |
+| `flt_eq_1`                    | _N/A_ |       |
+| `flt_op_0`                    | _N/A_ |       |
+| `flt_op_1`                    | _N/A_ |       |
+| `goto_dash`                   | _N/A_ |       |
+| `import_time`                 | _N/A_ |       |
+| `label`                       | _N/A_ |       |
+| `linear_color_scheme`         | _N/A_ |       |
+| `new_dashboard_name`          | _N/A_ |       |
+| `new_slice_name`              | _N/A_ |       |
+| `num_period_compare`          | _N/A_ |       |
+| `period_ratio_type`           | _N/A_ |       |
+| `perm`                        | _N/A_ |       |
+| `rdo_save`                    | _N/A_ |       |
+| `refresh_frequency`           | _N/A_ |       |
+| `remote_id`                   | _N/A_ |       |
+| `resample_fillmethod`         | _N/A_ |       |
+| `resample_how`                | _N/A_ |       |
+| `rose_area_proportion`        | _N/A_ |       |
+| `save_to_dashboard_id`        | _N/A_ |       |
+| `schema`                      | _N/A_ |       |
+| `series`                      | _N/A_ |       |
+| `show_bubbles`                | _N/A_ |       |
+| `slice_name`                  | _N/A_ |       |
+| `timed_refresh_immune_slices` | _N/A_ |       |
+| `userid`                      | _N/A_ |       |

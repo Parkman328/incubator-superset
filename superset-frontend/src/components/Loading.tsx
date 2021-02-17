@@ -17,14 +17,14 @@
  * under the License.
  */
 import React from 'react';
-import styled from '@superset-ui/style';
+import { styled } from '@superset-ui/core';
 
 interface Props {
   position?: string;
 }
 
 const LoaderImg = styled.img`
-  z-index: 1000;
+  z-index: 99;
   width: 50px;
   position: relative;
   margin: 10px;

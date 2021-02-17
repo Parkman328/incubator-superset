@@ -17,27 +17,24 @@
  * under the License.
  */
 import React from 'react';
-import { shallow, mount } from 'enzyme';
+import { styledMount as mount } from 'spec/helpers/theming';
+import { shallow } from 'enzyme';
 import { Nav } from 'react-bootstrap';
-import { supersetTheme, ThemeProvider } from '@superset-ui/style';
+import { Menu as DropdownMenu } from 'src/common/components';
+import NavDropdown from 'src/components/NavDropdown';
+import { Link } from 'react-router-dom';
 
-import Menu from 'src/components/Menu/Menu';
+import { Menu } from 'src/components/Menu/Menu';
+import MenuObject from 'src/components/Menu/MenuObject';
 
 const defaultProps = {
   data: {
     menu: [
       {
-        name: 'Security',
-        icon: 'fa-cogs',
-        label: 'Security',
-        childs: [
-          {
-            name: 'List Users',
-            icon: 'fa-user',
-            label: 'List Users',
-            url: '/users/list/',
-          },
-        ],
+        name: 'Home',
+        icon: '',
+        label: 'Home',
+        url: '/superset/welcome',
       },
       {
         name: 'Sources',
@@ -45,10 +42,10 @@ const defaultProps = {
         label: 'Sources',
         childs: [
           {
-            name: 'Tables',
+            name: 'Datasets',
             icon: 'fa-table',
-            label: 'Tables',
-            url: '/tablemodelview/list/?_flt_1_is_sqllab_view=y',
+            label: 'Datasets',
+            url: '/tablemodelview/list/',
           },
           '-',
           {
@@ -100,6 +97,21 @@ const defaultProps = {
       user_login_url: '/login/',
       locale: 'en',
     },
+    settings: [
+      {
+        name: 'Security',
+        icon: 'fa-cogs',
+        label: 'Security',
+        childs: [
+          {
+            name: 'List Users',
+            icon: 'fa-user',
+            label: 'List Users',
+            url: '/users/list/',
+          },
+        ],
+      },
+    ],
   },
 };
 
@@ -124,6 +136,10 @@ describe('Menu', () => {
 
   it('renders 2 navs', () => {
     expect(wrapper.find(Nav)).toHaveLength(2);
+  });
+
+  it('renders 4 elements in main Menu Nav for every user', () => {
+    expect(wrapper.find(MenuObject)).toHaveLength(4);
   });
 
   it('renders a logged out view', () => {
@@ -157,11 +173,40 @@ describe('Menu', () => {
       ...overrideProps,
     };
 
-    const versionedWrapper = mount(<Menu {...props} />, {
-      wrappingComponent: ThemeProvider,
-      wrappingComponentProps: { theme: supersetTheme },
-    });
+    const versionedWrapper = mount(<Menu {...props} />);
 
-    expect(versionedWrapper.find('.version-info div')).toHaveLength(2);
+    expect(versionedWrapper.find('.version-info span')).toHaveLength(2);
+  });
+
+  it('renders a NavDropdown (settings)', () => {
+    expect(wrapper.find(NavDropdown)).toHaveLength(1);
+  });
+
+  it('renders MenuItems in NavDropdown (settings)', () => {
+    expect(wrapper.find(NavDropdown).find(DropdownMenu.Item)).toHaveLength(3);
+  });
+
+  it('renders a react-router Link if isFrontendRoute', () => {
+    const props = {
+      ...defaultProps,
+      isFrontendRoute: jest.fn(() => true),
+    };
+
+    const wrapper2 = mount(<Menu {...props} />);
+
+    expect(props.isFrontendRoute).toHaveBeenCalled();
+    expect(wrapper2.find(Link)).toExist();
+  });
+
+  it('does not render a react-router Link if not isFrontendRoute', () => {
+    const props = {
+      ...defaultProps,
+      isFrontendRoute: jest.fn(() => false),
+    };
+
+    const wrapper2 = mount(<Menu {...props} />);
+
+    expect(props.isFrontendRoute).toHaveBeenCalled();
+    expect(wrapper2.find(Link).exists()).toBe(false);
   });
 });
